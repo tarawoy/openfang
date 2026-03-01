@@ -38,7 +38,6 @@ jobs:
 
       - name: Build CLI for OpenWrt
         env:
-          PKG_CONFIG_SYSROOT_DIR: /
           OPENSSL_STATIC: 1
         run: cargo zigbuild --release --target ${{ env.OPENWRT_TARGET }} --bin openfang
 
