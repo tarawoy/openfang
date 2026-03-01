@@ -39,6 +39,8 @@ jobs:
       - name: Build CLI for OpenWrt
         env:
           OPENSSL_STATIC: 1
+          OPENSSL_NO_PKG_CONFIG: 1
+          OPENSSL_VENDORED: 1
         run: cargo zigbuild --release --target ${{ env.OPENWRT_TARGET }} --bin openfang
 
       - name: Package artifact
