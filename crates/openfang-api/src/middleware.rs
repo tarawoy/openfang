@@ -82,6 +82,8 @@ pub async fn auth(
     // Public endpoints that don't require auth (dashboard needs these)
     let path = request.uri().path();
     if path == "/"
+        || path == "/logo.png"
+        || path == "/favicon.ico"
         || path == "/api/health"
         || path == "/api/health/detail"
         || path == "/api/status"
@@ -103,6 +105,9 @@ pub async fn auth(
         || path == "/api/approvals"
         || path.starts_with("/api/approvals/")
         || path == "/api/channels"
+        || path == "/api/hands"
+        || path == "/api/hands/active"
+        || path.starts_with("/api/hands/")
         || path == "/api/skills"
         || path == "/api/sessions"
         || path == "/api/integrations"
@@ -116,15 +121,22 @@ pub async fn auth(
         return next.run(request).await;
     }
 
-    // Check Authorization: Bearer <token> header
+    // Check Authorization: Bearer <token> header, then fallback to X-API-Key
     let bearer_token = request
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
 
+    let api_token = bearer_token.or_else(|| {
+        request
+            .headers()
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+    });
+
     // SECURITY: Use constant-time comparison to prevent timing attacks.
-    let header_auth = bearer_token.map(|token| {
+    let header_auth = api_token.map(|token| {
         use subtle::ConstantTimeEq;
         if token.len() != api_key.len() {
             return false;
