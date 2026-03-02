@@ -1862,7 +1862,7 @@ pub async fn configure_channel(
     let home = openfang_kernel::config::openfang_home();
     let secrets_path = home.join("secrets.env");
     let config_path = home.join("config.toml");
-    let mut config_fields: HashMap<String, String> = HashMap::new();
+    let mut config_fields: HashMap<String, toml::Value> = HashMap::new();
 
     for field_def in meta.fields {
         let value = fields
@@ -1886,8 +1886,38 @@ pub async fn configure_channel(
                 std::env::set_var(env_var, value);
             }
         } else {
-            // Config field — collect for TOML write
-            config_fields.insert(field_def.key.to_string(), value.to_string());
+            let toml_value = match field_def.field_type {
+                FieldType::Text => toml::Value::String(value.to_string()),
+                FieldType::Number => match value.parse::<i64>() {
+                    Ok(n) => toml::Value::Integer(n),
+                    Err(_) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({
+                                "error": format!("Invalid number for '{}'", field_def.label)
+                            })),
+                        );
+                    }
+                },
+                FieldType::List => {
+                    let items: Vec<toml::Value> = value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| {
+                            if let Ok(n) = s.parse::<i64>() {
+                                toml::Value::Integer(n)
+                            } else {
+                                toml::Value::String(s.to_string())
+                            }
+                        })
+                        .collect();
+                    toml::Value::Array(items)
+                }
+                FieldType::Secret => continue,
+            };
+
+            config_fields.insert(field_def.key.to_string(), toml_value);
         }
     }
 
@@ -6578,7 +6608,7 @@ fn remove_secret_env(path: &std::path::Path, key: &str) -> Result<(), std::io::E
 fn upsert_channel_config(
     config_path: &std::path::Path,
     channel_name: &str,
-    fields: &HashMap<String, String>,
+    fields: &HashMap<String, toml::Value>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let content = if config_path.exists() {
         std::fs::read_to_string(config_path)?
@@ -6609,7 +6639,7 @@ fn upsert_channel_config(
     // Build channel sub-table
     let mut ch_table = toml::map::Map::new();
     for (k, v) in fields {
-        ch_table.insert(k.clone(), toml::Value::String(v.clone()));
+        ch_table.insert(k.clone(), v.clone());
     }
     channels_table.insert(channel_name.to_string(), toml::Value::Table(ch_table));
 

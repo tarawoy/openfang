@@ -5,6 +5,7 @@
 
 use openfang_channels::bridge::{BridgeManager, ChannelBridgeHandle};
 use openfang_channels::discord::DiscordAdapter;
+#[cfg(not(target_env = "musl"))]
 use openfang_channels::email::EmailAdapter;
 use openfang_channels::google_chat::GoogleChatAdapter;
 use openfang_channels::irc::IrcAdapter;
@@ -1136,6 +1137,7 @@ pub async fn start_channel_bridge_with_config(
     }
 
     // Email
+    #[cfg(not(target_env = "musl"))]
     if let Some(ref em_config) = config.email {
         if let Some(password) = read_token(&em_config.password_env, "Email") {
             let adapter = Arc::new(EmailAdapter::new(
@@ -1151,6 +1153,11 @@ pub async fn start_channel_bridge_with_config(
             ));
             adapters.push((adapter, em_config.default_agent.clone()));
         }
+    }
+
+    #[cfg(target_env = "musl")]
+    if config.email.is_some() {
+        warn!("Email channel is disabled for musl/OpenWrt builds, skipping");
     }
 
     // Teams

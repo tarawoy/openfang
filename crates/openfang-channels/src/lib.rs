@@ -5,6 +5,7 @@
 
 pub mod bridge;
 pub mod discord;
+#[cfg(not(target_env = "musl"))]
 pub mod email;
 pub mod formatter;
 pub mod google_chat;
