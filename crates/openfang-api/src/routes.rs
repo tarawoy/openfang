@@ -1123,7 +1123,7 @@ const CHANNEL_REGISTRY: &[ChannelMeta] = &[
             ChannelField { key: "bot_token_env", label: "Bot Token", field_type: FieldType::Secret, env_var: Some("DISCORD_BOT_TOKEN"), required: true, placeholder: "MTIz...", advanced: false },
             ChannelField { key: "allowed_guilds", label: "Allowed Guild IDs", field_type: FieldType::List, env_var: None, required: false, placeholder: "123456789, 987654321", advanced: true },
             ChannelField { key: "default_agent", label: "Default Agent", field_type: FieldType::Text, env_var: None, required: false, placeholder: "assistant", advanced: true },
-            ChannelField { key: "intents", label: "Intents Bitmask", field_type: FieldType::Number, env_var: None, required: false, placeholder: "33280", advanced: true },
+            ChannelField { key: "intents", label: "Intents Bitmask", field_type: FieldType::Number, env_var: None, required: false, placeholder: "37376", advanced: true },
         ],
         setup_steps: &["Go to discord.com/developers/applications", "Create a bot and copy the token", "Paste it below"],
         config_template: "[channels.discord]\nbot_token_env = \"DISCORD_BOT_TOKEN\"",
@@ -1862,7 +1862,7 @@ pub async fn configure_channel(
     let home = openfang_kernel::config::openfang_home();
     let secrets_path = home.join("secrets.env");
     let config_path = home.join("config.toml");
-    let mut config_fields: HashMap<String, toml::Value> = HashMap::new();
+    let mut config_fields: HashMap<String, String> = HashMap::new();
 
     for field_def in meta.fields {
         let value = fields
@@ -1886,38 +1886,8 @@ pub async fn configure_channel(
                 std::env::set_var(env_var, value);
             }
         } else {
-            let toml_value = match field_def.field_type {
-                FieldType::Text => toml::Value::String(value.to_string()),
-                FieldType::Number => match value.parse::<i64>() {
-                    Ok(n) => toml::Value::Integer(n),
-                    Err(_) => {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(serde_json::json!({
-                                "error": format!("Invalid number for '{}'", field_def.label)
-                            })),
-                        );
-                    }
-                },
-                FieldType::List => {
-                    let items: Vec<toml::Value> = value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(|s| {
-                            if let Ok(n) = s.parse::<i64>() {
-                                toml::Value::Integer(n)
-                            } else {
-                                toml::Value::String(s.to_string())
-                            }
-                        })
-                        .collect();
-                    toml::Value::Array(items)
-                }
-                FieldType::Secret => continue,
-            };
-
-            config_fields.insert(field_def.key.to_string(), toml_value);
+            // Config field — collect for TOML write
+            config_fields.insert(field_def.key.to_string(), value.to_string());
         }
     }
 
@@ -3052,13 +3022,18 @@ pub async fn clawhub_install(
             )
         }
         Err(e) => {
-            let status = if e.to_string().contains("SecurityBlocked") {
+            let msg = format!("{e}");
+            let status = if msg.contains("SecurityBlocked") {
                 StatusCode::FORBIDDEN
+            } else if msg.contains("429") || msg.contains("rate limit") {
+                StatusCode::TOO_MANY_REQUESTS
+            } else if msg.contains("Network error") || msg.contains("returned 4") || msg.contains("returned 5") {
+                StatusCode::BAD_GATEWAY
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
-            tracing::warn!("ClawHub install failed: {e}");
-            (status, Json(serde_json::json!({"error": format!("{e}")})))
+            tracing::warn!("ClawHub install failed: {msg}");
+            (status, Json(serde_json::json!({"error": msg})))
         }
     }
 }
@@ -6608,7 +6583,7 @@ fn remove_secret_env(path: &std::path::Path, key: &str) -> Result<(), std::io::E
 fn upsert_channel_config(
     config_path: &std::path::Path,
     channel_name: &str,
-    fields: &HashMap<String, toml::Value>,
+    fields: &HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let content = if config_path.exists() {
         std::fs::read_to_string(config_path)?
@@ -6639,7 +6614,7 @@ fn upsert_channel_config(
     // Build channel sub-table
     let mut ch_table = toml::map::Map::new();
     for (k, v) in fields {
-        ch_table.insert(k.clone(), v.clone());
+        ch_table.insert(k.clone(), toml::Value::String(v.clone()));
     }
     channels_table.insert(channel_name.to_string(), toml::Value::Table(ch_table));
 
@@ -7017,6 +6992,29 @@ pub async fn create_schedule(
     }
 
     let agent_id_str = req["agent_id"].as_str().unwrap_or("").to_string();
+    if agent_id_str.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Missing required field: agent_id"})),
+        );
+    }
+    // Validate agent exists (UUID or name lookup)
+    let agent_exists = if let Ok(aid) = agent_id_str.parse::<AgentId>() {
+        state.kernel.registry.get(aid).is_some()
+    } else {
+        state
+            .kernel
+            .registry
+            .list()
+            .iter()
+            .any(|a| a.name == agent_id_str)
+    };
+    if !agent_exists {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("Agent not found: {agent_id_str}")})),
+        );
+    }
     let message = req["message"].as_str().unwrap_or("").to_string();
     let enabled = req.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
 
@@ -7190,10 +7188,14 @@ pub async fn run_schedule(
         .unwrap_or("Scheduled task triggered manually.");
     let name = schedule["name"].as_str().unwrap_or("(unnamed)");
 
-    // Find the target agent
+    // Find the target agent — require explicit agent_id, no silent fallback
     let target_agent = if !agent_id_str.is_empty() {
         if let Ok(aid) = agent_id_str.parse::<AgentId>() {
-            Some(aid)
+            if state.kernel.registry.get(aid).is_some() {
+                Some(aid)
+            } else {
+                None
+            }
         } else {
             state
                 .kernel
@@ -7204,7 +7206,7 @@ pub async fn run_schedule(
                 .map(|a| a.id)
         }
     } else {
-        state.kernel.registry.list().first().map(|a| a.id)
+        None
     };
 
     let target_agent = match target_agent {
