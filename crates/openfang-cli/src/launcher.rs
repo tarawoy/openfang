@@ -60,6 +60,9 @@ pub enum LauncherChoice {
     GetStarted,
     Chat,
     Dashboard,
+    OllamaStart,
+    ForceStop,
+    LocalDashboard,
     DesktopApp,
     TerminalUI,
     ShowHelp,
@@ -90,6 +93,16 @@ const MENU_FIRST_RUN: &[MenuItem] = &[
         choice: LauncherChoice::Dashboard,
     },
     MenuItem {
+        label: "Local dashboard",
+        hint: "LAN-only dashboard setup with generated API key",
+        choice: LauncherChoice::LocalDashboard,
+    },
+    MenuItem {
+        label: "Ollama start",
+        hint: "Set Ollama as default provider and start in background",
+        choice: LauncherChoice::OllamaStart,
+    },
+    MenuItem {
         label: "Open desktop app",
         hint: "Launch the native desktop app",
         choice: LauncherChoice::DesktopApp,
@@ -117,6 +130,21 @@ const MENU_RETURNING: &[MenuItem] = &[
         label: "Open dashboard",
         hint: "Launch the web UI in your browser",
         choice: LauncherChoice::Dashboard,
+    },
+    MenuItem {
+        label: "Local dashboard",
+        hint: "LAN-only dashboard setup with generated API key",
+        choice: LauncherChoice::LocalDashboard,
+    },
+    MenuItem {
+        label: "Ollama start",
+        hint: "Set Ollama as default provider and start in background",
+        choice: LauncherChoice::OllamaStart,
+    },
+    MenuItem {
+        label: "Force stop",
+        hint: "Kill the running daemon immediately",
+        choice: LauncherChoice::ForceStop,
     },
     MenuItem {
         label: "Launch terminal UI",

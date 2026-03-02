@@ -851,6 +851,9 @@ fn main() {
                 launcher::LauncherChoice::GetStarted => cmd_init(false),
                 launcher::LauncherChoice::Chat => cmd_quick_chat(cli.config, None),
                 launcher::LauncherChoice::Dashboard => cmd_dashboard(),
+                launcher::LauncherChoice::OllamaStart => cmd_ollama_start_background(),
+                launcher::LauncherChoice::ForceStop => cmd_force_stop(),
+                launcher::LauncherChoice::LocalDashboard => cmd_local_dashboard(),
                 launcher::LauncherChoice::DesktopApp => launcher::launch_desktop_app(),
                 launcher::LauncherChoice::TerminalUI => tui::run(cli.config),
                 launcher::LauncherChoice::ShowHelp => {
@@ -1460,6 +1463,82 @@ fn cmd_stop() {
     }
 }
 
+fn cmd_force_stop() {
+    match dirs::home_dir() {
+        Some(home) => {
+            let of_dir = home.join(".openfang");
+            if let Some(info) = read_daemon_info(&of_dir) {
+                force_kill_pid(info.pid);
+                let _ = std::fs::remove_file(of_dir.join("daemon.json"));
+                ui::success(&format!("Daemon stopped (forced, pid {})", info.pid));
+            } else {
+                ui::warn_with_fix(
+                    "No running daemon found",
+                    "Is it running? Check with: openfang status",
+                );
+            }
+        }
+        None => ui::error("Could not determine home directory"),
+    }
+}
+
+fn cmd_local_dashboard() {
+    let home = openfang_home();
+    let config_path = home.join("config.toml");
+
+    if !config_path.exists() {
+        ui::error_with_fix("No config file found", "Run `openfang init` first");
+        std::process::exit(1);
+    }
+
+    let api_key = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+
+    cmd_config_set("api_listen", "0.0.0.0:4200");
+    cmd_config_set("api_key", &api_key);
+
+    let lan_ip = detect_lan_ip().unwrap_or_else(|| "<device-lan-ip>".to_string());
+    ui::blank();
+    ui::success("Local dashboard access configured");
+    ui::kv("Dashboard", &format!("http://{lan_ip}:4200/"));
+    ui::kv("API key", &api_key);
+    ui::hint("Keep port 4200 blocked from WAN/public access.");
+}
+
+fn cmd_ollama_start_background() {
+    let home = openfang_home();
+    let config_path = home.join("config.toml");
+
+    if !config_path.exists() {
+        ui::error_with_fix("No config file found", "Run `openfang init` first");
+        std::process::exit(1);
+    }
+
+    cmd_config_set("default_model.provider", "ollama");
+    cmd_config_set("default_model.model", "glm-5:cloud");
+    cmd_config_set("default_model.api_key_env", "OLLAMA_API_KEY");
+
+    match start_daemon_background() {
+        Ok(url) => {
+            ui::blank();
+            ui::success("OpenFang started in background with Ollama");
+            ui::kv("Daemon", &url);
+            ui::kv("Provider", "ollama");
+            ui::kv("Model", "glm-5:cloud");
+        }
+        Err(e) => {
+            ui::error_with_fix(
+                &format!("Could not start daemon: {e}"),
+                "Start it manually with: openfang start",
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
 fn force_kill_pid(pid: u32) {
     #[cfg(unix)]
     {
@@ -1473,6 +1552,18 @@ fn force_kill_pid(pid: u32) {
             .args(["/PID", &pid.to_string(), "/F"])
             .output();
     }
+}
+
+fn detect_lan_ip() -> Option<String> {
+    let output = std::process::Command::new("hostname").arg("-I").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()?
+        .split_whitespace()
+        .next()
+        .map(ToString::to_string)
 }
 
 /// Show context-aware error for kernel boot failures.

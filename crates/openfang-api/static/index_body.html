@@ -914,6 +914,46 @@
                       <option value="concise">Concise</option><option value="mentor">Mentor</option>
                     </select>
                   </div>
+                  <div class="mt-4" style="border-top:1px solid var(--border);padding-top:16px">
+                    <h4 style="margin-bottom:8px;font-size:13px">Exec Policy</h4>
+                    <p class="text-xs text-dim" style="margin-bottom:12px">Per-agent shell policy override. Disable to inherit the global OpenFang exec policy.</p>
+                    <label class="flex items-center gap-2" style="font-size:12px;margin-bottom:12px">
+                      <input type="checkbox" x-model="configForm.exec_policy_enabled">
+                      <span>Override global exec policy</span>
+                    </label>
+                    <div x-show="configForm.exec_policy_enabled">
+                      <div class="form-group">
+                        <label>Mode</label>
+                        <select class="form-select" x-model="configForm.exec_policy_mode">
+                          <option value="deny">Deny</option>
+                          <option value="allowlist">Allowlist</option>
+                          <option value="full">Full</option>
+                        </select>
+                      </div>
+                      <div class="form-group">
+                        <label>Safe Bins</label>
+                        <input class="form-input" x-model="configForm.exec_safe_bins_text" placeholder="cat, sort, head">
+                      </div>
+                      <div class="form-group">
+                        <label>Allowed Commands</label>
+                        <textarea class="form-textarea" x-model="configForm.exec_allowed_commands_text" style="height:90px" placeholder="one command prefix per line"></textarea>
+                      </div>
+                      <div class="grid grid-2 gap-2">
+                        <div class="form-group">
+                          <label>Timeout (sec)</label>
+                          <input class="form-input" type="number" min="1" x-model="configForm.exec_timeout_secs">
+                        </div>
+                        <div class="form-group">
+                          <label>No-output Timeout (sec)</label>
+                          <input class="form-input" type="number" min="0" x-model="configForm.exec_no_output_timeout_secs">
+                        </div>
+                      </div>
+                      <div class="form-group">
+                        <label>Max Output Bytes</label>
+                        <input class="form-input" type="number" min="1024" step="1024" x-model="configForm.exec_max_output_bytes">
+                      </div>
+                    </div>
+                  </div>
                   <button class="btn btn-primary mt-4" @click="saveConfig()" :disabled="configSaving">
                     <span x-show="!configSaving">Save Config</span><span x-show="configSaving">Saving...</span>
                   </button>

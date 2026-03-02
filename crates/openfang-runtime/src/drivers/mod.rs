@@ -15,10 +15,10 @@ use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
     AI21_BASE_URL, ANTHROPIC_BASE_URL, CEREBRAS_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL,
     FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL, HUGGINGFACE_BASE_URL, LMSTUDIO_BASE_URL,
-    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, OLLAMA_BASE_URL, OPENAI_BASE_URL,
-    OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
-    REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VLLM_BASE_URL, XAI_BASE_URL,
-    ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL,
+    OLLAMA_BASE_URL, OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL,
+    QIANFAN_BASE_URL, QWEN_BASE_URL, REPLICATE_BASE_URL, SAMBANOVA_BASE_URL,
+    TOGETHER_BASE_URL, VLLM_BASE_URL, XAI_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::sync::Arc;
 
@@ -61,6 +61,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         "fireworks" => Some(ProviderDefaults {
             base_url: FIREWORKS_BASE_URL,
             api_key_env: "FIREWORKS_API_KEY",
+            key_required: true,
+        }),
+        "nim" | "nvidia-nim" | "nvidia" => Some(ProviderDefaults {
+            base_url: NVIDIA_NIM_BASE_URL,
+            api_key_env: "NVIDIA_NIM_API_KEY",
             key_required: true,
         }),
         "openai" => Some(ProviderDefaults {
@@ -188,6 +193,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
 /// - `together` — Together AI
 /// - `mistral` — Mistral AI
 /// - `fireworks` — Fireworks AI
+/// - `nim` — NVIDIA NIM
 /// - `ollama` — Ollama (local)
 /// - `vllm` — vLLM (local)
 /// - `lmstudio` — LM Studio (local)
@@ -323,8 +329,8 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         message: format!(
             "Unknown provider '{}'. Supported: anthropic, gemini, openai, groq, openrouter, \
              deepseek, together, mistral, fireworks, ollama, vllm, lmstudio, perplexity, \
-             cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, github-copilot, \
-             codex, claude-code. Or set base_url for a custom OpenAI-compatible endpoint.",
+             cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, nim, \
+             github-copilot, codex, claude-code. Or set base_url for a custom OpenAI-compatible endpoint.",
             provider
         ),
     })
@@ -342,6 +348,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "together",
         "mistral",
         "fireworks",
+        "nim",
         "ollama",
         "vllm",
         "lmstudio",

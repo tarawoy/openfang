@@ -927,12 +927,16 @@ pub async fn get_agent(
                 "network": entry.manifest.capabilities.network,
             },
             "description": entry.manifest.description,
+            "system_prompt": entry.manifest.model.system_prompt,
             "tags": entry.manifest.tags,
             "identity": {
                 "emoji": entry.identity.emoji,
                 "avatar_url": entry.identity.avatar_url,
                 "color": entry.identity.color,
+                "archetype": entry.identity.archetype,
+                "vibe": entry.identity.vibe,
             },
+            "exec_policy": entry.manifest.exec_policy,
             "skills": entry.manifest.skills,
             "skills_mode": if entry.manifest.skills.is_empty() { "all" } else { "allowlist" },
             "mcp_servers": entry.manifest.mcp_servers,
@@ -1759,7 +1763,94 @@ fn is_channel_configured(config: &openfang_types::config::ChannelsConfig, name: 
 }
 
 /// Build a JSON field descriptor, checking env var presence but never exposing secrets.
-fn build_field_json(f: &ChannelField) -> serde_json::Value {
+fn field_value_to_json_string(
+    field_type: FieldType,
+    value: Option<&serde_json::Value>,
+) -> Option<String> {
+    let value = value?;
+    match field_type {
+        FieldType::Secret => None,
+        FieldType::Text => value.as_str().map(ToString::to_string).or_else(|| {
+            if value.is_number() || value.is_boolean() {
+                Some(value.to_string())
+            } else {
+                None
+            }
+        }),
+        FieldType::Number => {
+            if value.is_number() {
+                Some(value.to_string())
+            } else {
+                value.as_str().map(ToString::to_string)
+            }
+        }
+        FieldType::List => {
+            if let Some(items) = value.as_array() {
+                Some(
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(ToString::to_string))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )
+            } else {
+                value.as_str().map(ToString::to_string)
+            }
+        }
+    }
+}
+
+fn channel_config_json(
+    config: &openfang_types::config::ChannelsConfig,
+    name: &str,
+) -> Option<serde_json::Value> {
+    let value = match name {
+        "telegram" => config.telegram.as_ref().map(serde_json::to_value),
+        "discord" => config.discord.as_ref().map(serde_json::to_value),
+        "slack" => config.slack.as_ref().map(serde_json::to_value),
+        "whatsapp" => config.whatsapp.as_ref().map(serde_json::to_value),
+        "signal" => config.signal.as_ref().map(serde_json::to_value),
+        "matrix" => config.matrix.as_ref().map(serde_json::to_value),
+        "email" => config.email.as_ref().map(serde_json::to_value),
+        "line" => config.line.as_ref().map(serde_json::to_value),
+        "viber" => config.viber.as_ref().map(serde_json::to_value),
+        "messenger" => config.messenger.as_ref().map(serde_json::to_value),
+        "threema" => config.threema.as_ref().map(serde_json::to_value),
+        "keybase" => config.keybase.as_ref().map(serde_json::to_value),
+        "reddit" => config.reddit.as_ref().map(serde_json::to_value),
+        "mastodon" => config.mastodon.as_ref().map(serde_json::to_value),
+        "bluesky" => config.bluesky.as_ref().map(serde_json::to_value),
+        "linkedin" => config.linkedin.as_ref().map(serde_json::to_value),
+        "nostr" => config.nostr.as_ref().map(serde_json::to_value),
+        "teams" => config.teams.as_ref().map(serde_json::to_value),
+        "mattermost" => config.mattermost.as_ref().map(serde_json::to_value),
+        "google_chat" => config.google_chat.as_ref().map(serde_json::to_value),
+        "webex" => config.webex.as_ref().map(serde_json::to_value),
+        "feishu" => config.feishu.as_ref().map(serde_json::to_value),
+        "dingtalk" => config.dingtalk.as_ref().map(serde_json::to_value),
+        "pumble" => config.pumble.as_ref().map(serde_json::to_value),
+        "flock" => config.flock.as_ref().map(serde_json::to_value),
+        "twist" => config.twist.as_ref().map(serde_json::to_value),
+        "zulip" => config.zulip.as_ref().map(serde_json::to_value),
+        "irc" => config.irc.as_ref().map(serde_json::to_value),
+        "xmpp" => config.xmpp.as_ref().map(serde_json::to_value),
+        "gitter" => config.gitter.as_ref().map(serde_json::to_value),
+        "discourse" => config.discourse.as_ref().map(serde_json::to_value),
+        "revolt" => config.revolt.as_ref().map(serde_json::to_value),
+        "guilded" => config.guilded.as_ref().map(serde_json::to_value),
+        "nextcloud" => config.nextcloud.as_ref().map(serde_json::to_value),
+        "rocketchat" => config.rocketchat.as_ref().map(serde_json::to_value),
+        "twitch" => config.twitch.as_ref().map(serde_json::to_value),
+        "ntfy" => config.ntfy.as_ref().map(serde_json::to_value),
+        "gotify" => config.gotify.as_ref().map(serde_json::to_value),
+        "webhook" => config.webhook.as_ref().map(serde_json::to_value),
+        "mumble" => config.mumble.as_ref().map(serde_json::to_value),
+        _ => None,
+    }?;
+    value.ok()
+}
+
+fn build_field_json(f: &ChannelField, current_value: Option<&serde_json::Value>) -> serde_json::Value {
     let has_value = f
         .env_var
         .map(|ev| std::env::var(ev).map(|v| !v.is_empty()).unwrap_or(false))
@@ -1773,6 +1864,7 @@ fn build_field_json(f: &ChannelField) -> serde_json::Value {
         "has_value": has_value,
         "placeholder": f.placeholder,
         "advanced": f.advanced,
+        "value": field_value_to_json_string(f.field_type, current_value),
     })
 }
 
@@ -1806,7 +1898,15 @@ pub async fn list_channels(State(state): State<Arc<AppState>>) -> impl IntoRespo
                     .unwrap_or(true)
             });
 
-        let fields: Vec<serde_json::Value> = meta.fields.iter().map(build_field_json).collect();
+        let current_config = channel_config_json(&live_channels, meta.name);
+        let fields: Vec<serde_json::Value> = meta
+            .fields
+            .iter()
+            .map(|field| {
+                let current_value = current_config.as_ref().and_then(|cfg| cfg.get(field.key));
+                build_field_json(field, current_value)
+            })
+            .collect();
 
         channels.push(serde_json::json!({
             "name": meta.name,
@@ -7354,6 +7454,17 @@ pub async fn update_agent_identity(
 
 /// Request body for patching agent config (name, description, prompt, identity, model).
 #[derive(serde::Deserialize)]
+pub struct PatchExecPolicyRequest {
+    pub enabled: Option<bool>,
+    pub mode: Option<openfang_types::config::ExecSecurityMode>,
+    pub safe_bins: Option<Vec<String>>,
+    pub allowed_commands: Option<Vec<String>>,
+    pub timeout_secs: Option<u64>,
+    pub max_output_bytes: Option<usize>,
+    pub no_output_timeout_secs: Option<u64>,
+}
+
+#[derive(serde::Deserialize)]
 pub struct PatchAgentConfigRequest {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -7368,6 +7479,7 @@ pub struct PatchAgentConfigRequest {
     pub provider: Option<String>,
     pub api_key_env: Option<String>,
     pub base_url: Option<String>,
+    pub exec_policy: Option<PatchExecPolicyRequest>,
 }
 
 /// PATCH /api/agents/{id}/config — Hot-update agent name, description, system prompt, and identity.
@@ -7413,6 +7525,24 @@ pub async fn patch_agent_config(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 Json(serde_json::json!({"error": format!("System prompt exceeds max length ({MAX_PROMPT_LEN} chars)")})),
             );
+        }
+    }
+    if let Some(ref exec_policy) = req.exec_policy {
+        if let Some(ref safe_bins) = exec_policy.safe_bins {
+            if safe_bins.iter().any(|item| item.len() > 256) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "safe_bins entries must be 256 chars or less"})),
+                );
+            }
+        }
+        if let Some(ref commands) = exec_policy.allowed_commands {
+            if commands.iter().any(|item| item.len() > 512) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "allowed_commands entries must be 512 chars or less"})),
+                );
+            }
         }
     }
 
@@ -7519,6 +7649,46 @@ pub async fn patch_agent_config(
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Agent not found"})),
+            );
+        }
+    }
+
+    if let Some(ref exec_policy_req) = req.exec_policy {
+        let next_policy = if exec_policy_req.enabled == Some(false) {
+            None
+        } else {
+            let current = state
+                .kernel
+                .registry
+                .get(agent_id)
+                .and_then(|entry| entry.manifest.exec_policy)
+                .unwrap_or_default();
+            let mut merged = current;
+            if let Some(mode) = exec_policy_req.mode {
+                merged.mode = mode;
+            }
+            if let Some(ref safe_bins) = exec_policy_req.safe_bins {
+                merged.safe_bins = safe_bins.clone();
+            }
+            if let Some(ref commands) = exec_policy_req.allowed_commands {
+                merged.allowed_commands = commands.clone();
+            }
+            if let Some(timeout_secs) = exec_policy_req.timeout_secs {
+                merged.timeout_secs = timeout_secs;
+            }
+            if let Some(max_output_bytes) = exec_policy_req.max_output_bytes {
+                merged.max_output_bytes = max_output_bytes;
+            }
+            if let Some(no_output_timeout_secs) = exec_policy_req.no_output_timeout_secs {
+                merged.no_output_timeout_secs = no_output_timeout_secs;
+            }
+            Some(merged)
+        };
+
+        if let Err(e) = state.kernel.registry.update_exec_policy(agent_id, next_policy) {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": e.to_string()})),
             );
         }
     }

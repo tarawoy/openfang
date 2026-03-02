@@ -101,12 +101,20 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
+        name: "nim",
+        display: "NVIDIA NIM",
+        env_var: "NVIDIA_NIM_API_KEY",
+        default_model: "meta/llama-3.1-70b-instruct",
+        needs_key: true,
+        hint: "nvidia",
+    },
+    ProviderInfo {
         name: "ollama",
         display: "Ollama",
         env_var: "OLLAMA_API_KEY",
-        default_model: "llama3.2",
+        default_model: "glm-5:cloud",
         needs_key: false,
-        hint: "local",
+        hint: "local / cloud",
     },
     ProviderInfo {
         name: "lmstudio",
@@ -346,6 +354,21 @@ impl State {
             None => return,
         };
 
+        if p.name == "ollama" {
+            self.model_entries.push(ModelEntry {
+                id: "glm-5:cloud".to_string(),
+                display_name: "GLM-5 Cloud (Ollama Cloud)".to_string(),
+                tier: "cloud",
+                cost: "cloud".to_string(),
+            });
+            self.model_entries.push(ModelEntry {
+                id: "llama3.2".to_string(),
+                display_name: "Llama 3.2 (Local)".to_string(),
+                tier: "local",
+                cost: "local".to_string(),
+            });
+        }
+
         let models = self.model_catalog.models_by_provider(p.name);
         let mut default_idx = 0usize;
 
@@ -358,7 +381,11 @@ impl State {
             };
 
             if m.id == p.default_model {
-                default_idx = i;
+                default_idx = self.model_entries.len() + i;
+            }
+
+            if self.model_entries.iter().any(|entry| entry.id == m.id) {
+                continue;
             }
 
             self.model_entries.push(ModelEntry {
@@ -1747,7 +1774,11 @@ fn draw_model(f: &mut Frame, area: Rect, state: &mut State) {
 
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            "  [\u{2191}\u{2193}/jk] Navigate  [Enter] Select  [Esc] Back    * = default",
+            if p.name == "ollama" {
+                "  [\u{2191}\u{2193}/jk] Navigate  [Enter] Select  [Esc] Back    choose Cloud or Local"
+            } else {
+                "  [\u{2191}\u{2193}/jk] Navigate  [Enter] Select  [Esc] Back    * = default"
+            },
             theme::hint_style(),
         )])),
         chunks[2],

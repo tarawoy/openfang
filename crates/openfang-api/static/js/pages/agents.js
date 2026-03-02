@@ -322,15 +322,46 @@ function agentsPage() {
       this.agentFiles = [];
       this.editingFile = null;
       this.fileContent = '';
-      this.configForm = {
+      this.configForm = this.buildConfigForm(agent);
+      this.showDetailModal = true;
+      this.loadAgentDetail();
+    },
+
+    buildConfigForm(agent) {
+      var execPolicy = agent.exec_policy || null;
+      return {
         name: agent.name || '',
         system_prompt: agent.system_prompt || '',
         emoji: (agent.identity && agent.identity.emoji) || '',
         color: (agent.identity && agent.identity.color) || '#FF5C00',
         archetype: (agent.identity && agent.identity.archetype) || '',
-        vibe: (agent.identity && agent.identity.vibe) || ''
+        vibe: (agent.identity && agent.identity.vibe) || '',
+        exec_policy_enabled: !!execPolicy,
+        exec_policy_mode: execPolicy ? (execPolicy.mode || 'allowlist') : 'allowlist',
+        exec_safe_bins_text: execPolicy && execPolicy.safe_bins ? execPolicy.safe_bins.join(', ') : '',
+        exec_allowed_commands_text: execPolicy && execPolicy.allowed_commands ? execPolicy.allowed_commands.join('\n') : '',
+        exec_timeout_secs: execPolicy ? (execPolicy.timeout_secs || 30) : 30,
+        exec_max_output_bytes: execPolicy ? (execPolicy.max_output_bytes || 102400) : 102400,
+        exec_no_output_timeout_secs: execPolicy ? (execPolicy.no_output_timeout_secs || 30) : 30
       };
-      this.showDetailModal = true;
+    },
+
+    splitListInput(value, separator) {
+      return (value || '')
+        .split(separator)
+        .map(function(item) { return item.trim(); })
+        .filter(function(item) { return !!item; });
+    },
+
+    async loadAgentDetail() {
+      if (!this.detailAgent) return;
+      try {
+        var detail = await OpenFangAPI.get('/api/agents/' + this.detailAgent.id);
+        this.detailAgent = Object.assign({}, this.detailAgent, detail);
+        this.configForm = this.buildConfigForm(this.detailAgent);
+      } catch(e) {
+        OpenFangToast.error('Failed to load agent detail: ' + e.message);
+      }
     },
 
     killAgent(agent) {
@@ -527,9 +558,29 @@ function agentsPage() {
       if (!this.detailAgent) return;
       this.configSaving = true;
       try {
-        await OpenFangAPI.patch('/api/agents/' + this.detailAgent.id + '/config', this.configForm);
+        var payload = {
+          name: this.configForm.name,
+          system_prompt: this.configForm.system_prompt,
+          emoji: this.configForm.emoji,
+          color: this.configForm.color,
+          archetype: this.configForm.archetype,
+          vibe: this.configForm.vibe,
+          exec_policy: {
+            enabled: !!this.configForm.exec_policy_enabled
+          }
+        };
+        if (this.configForm.exec_policy_enabled) {
+          payload.exec_policy.mode = this.configForm.exec_policy_mode || 'allowlist';
+          payload.exec_policy.safe_bins = this.splitListInput(this.configForm.exec_safe_bins_text, ',');
+          payload.exec_policy.allowed_commands = this.splitListInput(this.configForm.exec_allowed_commands_text, '\n');
+          payload.exec_policy.timeout_secs = Number(this.configForm.exec_timeout_secs || 30);
+          payload.exec_policy.max_output_bytes = Number(this.configForm.exec_max_output_bytes || 102400);
+          payload.exec_policy.no_output_timeout_secs = Number(this.configForm.exec_no_output_timeout_secs || 30);
+        }
+        await OpenFangAPI.patch('/api/agents/' + this.detailAgent.id + '/config', payload);
         OpenFangToast.success('Config updated');
         await Alpine.store('app').refreshAgents();
+        await this.loadAgentDetail();
       } catch(e) {
         OpenFangToast.error('Failed to save config: ' + e.message);
       }
