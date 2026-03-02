@@ -142,6 +142,11 @@ function channelsPage() {
     openSetup(ch) {
       this.setupModal = ch;
       this.formValues = {};
+      (ch.fields || []).forEach(function(field) {
+        if (field.value !== null && field.value !== undefined && field.value !== '') {
+          this.formValues[field.key] = field.value;
+        }
+      }, this);
       this.showAdvanced = false;
       this.showBusinessApi = false;
       this.setupStep = ch.configured ? 3 : 1;

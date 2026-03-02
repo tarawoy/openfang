@@ -68,9 +68,15 @@ const PROVIDERS: &[ProviderInfo] = &[
         needs_key: true,
     },
     ProviderInfo {
+        name: "nim",
+        env_var: "NVIDIA_NIM_API_KEY",
+        default_model: "meta/llama-3.1-70b-instruct",
+        needs_key: true,
+    },
+    ProviderInfo {
         name: "ollama",
         env_var: "OLLAMA_API_KEY",
-        default_model: "llama3.2",
+        default_model: "glm-5:cloud",
         needs_key: false,
     },
     ProviderInfo {
@@ -273,6 +279,17 @@ impl WizardState {
                 self.step = WizardStep::Saving;
                 self.save_config();
             }
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
+                if let Some(p) = self.selected_provider_info() {
+                    if p.name == "ollama" {
+                        self.model_input = if self.model_input == "llama3.2" {
+                            "glm-5:cloud".to_string()
+                        } else {
+                            "llama3.2".to_string()
+                        };
+                    }
+                }
+            }
             KeyCode::Char(c) => {
                 self.model_input.push(c);
             }
@@ -440,7 +457,9 @@ fn draw_provider(f: &mut Frame, area: Rect, state: &mut WizardState) {
         .iter()
         .map(|&idx| {
             let p = &PROVIDERS[idx];
-            let hint = if !p.needs_key {
+            let hint = if p.name == "ollama" {
+                "local or cloud via Ollama".to_string()
+            } else if !p.needs_key {
                 "local, no key needed".to_string()
             } else if std::env::var(p.env_var).is_ok() {
                 format!("{} detected", p.env_var)
@@ -560,6 +579,21 @@ fn draw_model(f: &mut Frame, area: Rect, state: &mut WizardState) {
         theme::dim_style(),
     )]));
     f.render_widget(default_hint, chunks[2]);
+
+    if p.name == "ollama" {
+        let selected = if display_text == "llama3.2" {
+            "Local"
+        } else if display_text == "glm-5:cloud" {
+            "Cloud"
+        } else {
+            "Custom"
+        };
+        let mode_hint = Paragraph::new(Line::from(vec![Span::styled(
+            format!("    [Tab/\u{2190}\u{2192}] Toggle Local (llama3.2) / Cloud (glm-5:cloud)  current: {selected}"),
+            theme::dim_style(),
+        )]));
+        f.render_widget(mode_hint, Rect { x: chunks[2].x, y: chunks[2].y.saturating_add(1), width: chunks[2].width, height: 1 });
+    }
 
     let hints = Paragraph::new(Line::from(vec![Span::styled(
         "    [Enter] Confirm  [Esc] Back",

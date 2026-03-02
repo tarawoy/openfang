@@ -376,7 +376,13 @@ async fn dispatch_message(
     let output_format = overrides
         .as_ref()
         .and_then(|o| o.output_format)
-        .unwrap_or(OutputFormat::Markdown);
+        .unwrap_or_else(|| {
+            if ct_str == "telegram" {
+                OutputFormat::TelegramHtml
+            } else {
+                OutputFormat::Markdown
+            }
+        });
     let threading_enabled = overrides.as_ref().map(|o| o.threading).unwrap_or(false);
     let thread_id = if threading_enabled {
         message.thread_id.as_deref()

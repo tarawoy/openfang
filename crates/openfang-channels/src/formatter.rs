@@ -21,7 +21,23 @@ pub fn format_for_channel(text: &str, format: OutputFormat) -> String {
 ///
 /// Supported tags: `<b>`, `<i>`, `<code>`, `<pre>`, `<a href="">`.
 fn markdown_to_telegram_html(text: &str) -> String {
-    let mut result = text.to_string();
+    let mut result = escape_html(text);
+
+    // Fenced code blocks: ```lang\ncode``` -> <pre><code>code</code></pre>
+    while let Some(start) = result.find("```") {
+        if let Some(end_rel) = result[start + 3..].find("```") {
+            let end = start + 3 + end_rel;
+            let inner = result[start + 3..end].trim_matches('\n').to_string();
+            result = format!(
+                "{}<pre><code>{}</code></pre>{}",
+                &result[..start],
+                inner,
+                &result[end + 3..]
+            );
+        } else {
+            break;
+        }
+    }
 
     // Bold: **text** → <b>text</b>
     while let Some(start) = result.find("**") {
@@ -85,7 +101,7 @@ fn markdown_to_telegram_html(text: &str) -> String {
                 result = format!(
                     "{}<a href=\"{}\">{}</a>{}",
                     &result[..bracket_start],
-                    url,
+                    escape_html_attr(url),
                     link_text,
                     &result[paren_end + 1..]
                 );
@@ -98,6 +114,16 @@ fn markdown_to_telegram_html(text: &str) -> String {
     }
 
     result
+}
+
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn escape_html_attr(text: &str) -> String {
+    escape_html(text).replace('"', "&quot;")
 }
 
 /// Convert Markdown to Slack mrkdwn format.
@@ -224,6 +250,12 @@ mod tests {
     fn test_telegram_html_link() {
         let result = markdown_to_telegram_html("[click here](https://example.com)");
         assert_eq!(result, "<a href=\"https://example.com\">click here</a>");
+    }
+
+    #[test]
+    fn test_telegram_html_escapes_html() {
+        let result = markdown_to_telegram_html("<hello> & **world**");
+        assert_eq!(result, "&lt;hello&gt; &amp; <b>world</b>");
     }
 
     #[test]
