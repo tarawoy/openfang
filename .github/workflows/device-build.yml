@@ -55,7 +55,6 @@ jobs:
             os: windows-latest
             archive: zip
             use_cross: false
-    if: github.event.inputs.target == 'all' || github.event.inputs.target == matrix.target
     steps:
       - uses: actions/checkout@v4
 
