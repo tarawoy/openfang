@@ -335,10 +335,7 @@ pub fn spawn_daemon_stream(
     std::thread::spawn(move || {
         use std::io::{BufRead, BufReader, Read};
 
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(300))
-            .build()
-            .unwrap();
+        let client = daemon_client_with_timeout(300);
 
         let url = format!("{base_url}/api/agents/{agent_id}/message/stream");
         let resp = client
@@ -449,10 +446,7 @@ fn daemon_fallback(
     agent_id: &str,
     message: &str,
 ) -> Result<AgentLoopResult, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = daemon_client_with_timeout(120);
 
     let resp = client
         .post(format!("{base_url}/api/agents/{agent_id}/message"))
@@ -487,10 +481,7 @@ fn daemon_fallback(
 /// Spawn a background thread that spawns an agent on the daemon.
 pub fn spawn_daemon_agent(base_url: String, toml_content: String, tx: mpsc::Sender<AppEvent>) {
     std::thread::spawn(move || {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .unwrap();
+        let client = daemon_client_with_timeout(30);
 
         let resp = client
             .post(format!("{base_url}/api/agents"))
@@ -1216,11 +1207,37 @@ pub fn spawn_update_agent_mcp_servers(
 
 // ── New screen spawn functions ───────────────────────────────────────────────
 
-fn daemon_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(5))
+fn read_daemon_api_key() -> Option<String> {
+    let config_path = dirs::home_dir()?.join(".openfang").join("config.toml");
+    let text = std::fs::read_to_string(config_path).ok()?;
+    let table: toml::Value = text.parse().ok()?;
+    let key = table.get("api_key")?.as_str()?.trim();
+    if key.is_empty() {
+        None
+    } else {
+        Some(key.to_string())
+    }
+}
+
+fn daemon_client_with_timeout(timeout_secs: u64) -> reqwest::blocking::Client {
+    let mut builder =
+        reqwest::blocking::Client::builder().timeout(Duration::from_secs(timeout_secs));
+    if let Some(api_key) = read_daemon_api_key() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Ok(header_value) =
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}"))
+        {
+            headers.insert(reqwest::header::AUTHORIZATION, header_value);
+            builder = builder.default_headers(headers);
+        }
+    }
+    builder
         .build()
         .unwrap_or_else(|_| reqwest::blocking::Client::new())
+}
+
+fn daemon_client() -> reqwest::blocking::Client {
+    daemon_client_with_timeout(5)
 }
 
 /// Fetch sessions list.

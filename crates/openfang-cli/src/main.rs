@@ -4941,24 +4941,32 @@ fn cmd_config_set(key: &str, value: &str) {
     });
 
     // Try to preserve type: if the existing value is an integer, parse as int, etc.
+    let normalized_value = if key == "default_model.api_key_env"
+        && value.eq_ignore_ascii_case("ollama_api_key")
+    {
+        "OLLAMA_API_KEY"
+    } else {
+        value
+    };
+
     let new_value = if let Some(existing) = tbl.get(last_key) {
         match existing {
-            toml::Value::Integer(_) => value
+            toml::Value::Integer(_) => normalized_value
                 .parse::<i64>()
                 .map(toml::Value::Integer)
-                .unwrap_or_else(|_| toml::Value::String(value.to_string())),
-            toml::Value::Float(_) => value
+                .unwrap_or_else(|_| toml::Value::String(normalized_value.to_string())),
+            toml::Value::Float(_) => normalized_value
                 .parse::<f64>()
                 .map(toml::Value::Float)
-                .unwrap_or_else(|_| toml::Value::String(value.to_string())),
-            toml::Value::Boolean(_) => value
+                .unwrap_or_else(|_| toml::Value::String(normalized_value.to_string())),
+            toml::Value::Boolean(_) => normalized_value
                 .parse::<bool>()
                 .map(toml::Value::Boolean)
-                .unwrap_or_else(|_| toml::Value::String(value.to_string())),
-            _ => toml::Value::String(value.to_string()),
+                .unwrap_or_else(|_| toml::Value::String(normalized_value.to_string())),
+            _ => toml::Value::String(normalized_value.to_string()),
         }
     } else {
-        toml::Value::String(value.to_string())
+        toml::Value::String(normalized_value.to_string())
     };
 
     tbl.insert(last_key.to_string(), new_value);
