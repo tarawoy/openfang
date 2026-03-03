@@ -19,7 +19,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/version-0.1.0-green?style=flat-square" alt="v0.1.0" />
+  <img src="https://img.shields.io/badge/upstream-v0.3.4-green?style=flat-square" alt="upstream v0.3.4" />
   <img src="https://img.shields.io/badge/tests-1,767%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
   <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
@@ -27,9 +27,9 @@
 
 ---
 
-> **v0.1.0 — First Release (February 2026)**
+> **Fork status**
 >
-> OpenFang is feature-complete but this is the first public release. You may encounter instability, rough edges, or breaking changes between minor versions. We ship fast and fix fast. Pin to a specific commit for production use until v1.0. [Report issues here.](https://github.com/RightNow-AI/openfang/issues)
+> This repo tracks upstream OpenFang through `v0.3.4` and includes additional launcher, provider, OpenWrt, and Telegram-focused changes. Use the sections below for the current menu flow and fork-specific behavior.
 
 ---
 
@@ -58,6 +58,131 @@ openfang start
 ```
 
 </details>
+
+---
+
+## Fork Changes In This Repo
+
+This fork keeps upstream OpenFang and adds device-oriented workflow improvements for local deployment.
+
+- NIM provider support
+- Ollama local or cloud choice during init/setup
+- Launcher submenus for Ollama, Local dashboard, Exec policy, and Auto start
+- Dashboard per-agent exec policy override
+- Better channel edit prefill in the dashboard
+- Improved Telegram output formatting
+
+---
+
+## Launcher Flow
+
+Running `openfang` with no subcommand opens the interactive launcher. The current launcher is designed for OpenWrt and local-device operation.
+
+### Main menu
+
+- `Get started`
+- `Chat with an agent`
+- `Auto start`
+- `Open dashboard`
+- `Local dashboard`
+- `Ollama start`
+- `Exec policy`
+- `Force stop`
+- `Launch terminal UI`
+- `Open desktop app`
+- `Show all commands`
+
+### Ollama start
+
+`Ollama start` is now a submenu:
+
+- `Start with Ollama`
+- `Set API key`
+- `Set model`
+
+Behavior:
+
+- `Set API key` writes `OLLAMA_API_KEY` into `~/.openfang/secrets.env`
+- `Set model` updates `default_model.model`
+- `Start with Ollama` sets:
+  - `default_model.provider = "ollama"`
+  - `default_model.api_key_env = "OLLAMA_API_KEY"`
+  - `default_model.model = <saved model or glm-5:cloud>`
+- `Start with Ollama` launches the local OpenFang daemon in the background
+- It uses the existing `OLLAMA_API_KEY`; it does not overwrite the key unless you explicitly choose `Set API key`
+
+### Local dashboard
+
+`Local dashboard` is now a submenu:
+
+- `Set API Dashboard (generate API)`
+- `Launch Dashboard`
+
+Behavior:
+
+- `Set API Dashboard (generate API)`:
+  - sets `api_listen = "0.0.0.0:4200"`
+  - generates a dashboard API key and saves it to `config.toml`
+- `Launch Dashboard`:
+  - keeps the existing API key
+  - starts the local OpenFang daemon in the background
+  - serves the dashboard on LAN as before
+  - does not generate a new key
+
+### Exec policy
+
+`Exec policy` is now a submenu:
+
+- `Set mode = full`
+- `Set mode = safe`
+- `Set mode = allowlist`
+- `Add whitelist cmd`
+- `Remove whitelist cmd`
+
+Behavior:
+
+- `full`: agents can use all shell commands
+- `safe`: uses `safe_bins`
+- `allowlist`: uses `allowed_commands`
+- add/remove actions update the active whitelist entries in `config.toml`
+
+### Auto start
+
+`Auto start` is now a submenu for OpenWrt service control:
+
+- `ON`
+- `OFF`
+
+Behavior:
+
+- `ON`:
+  - creates `/etc/init.d/openfang`
+  - enables the service
+  - starts OpenFang now
+- `OFF`:
+  - disables the service
+  - stops the OpenFang service
+- when enabled, OpenFang will auto-start on device reboot/wakeup and keep the local daemon/dashboard flow available in the background
+
+---
+
+## OpenWrt Quick Start
+
+For local-device use on OpenWrt:
+
+```bash
+openfang init
+openfang
+```
+
+Recommended first-run flow:
+
+1. `Get started`
+2. `Ollama start` -> `Set API key` if needed
+3. `Ollama start` -> `Set model`
+4. `Local dashboard` -> `Set API Dashboard (generate API)`
+5. `Local dashboard` -> `Launch Dashboard`
+6. `Auto start` -> `ON` if this device should keep OpenFang running after reboot
 
 ---
 
