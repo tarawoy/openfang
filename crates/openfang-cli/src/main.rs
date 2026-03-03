@@ -18,6 +18,8 @@ use colored::Colorize;
 use openfang_api::server::read_daemon_info;
 use openfang_kernel::OpenFangKernel;
 use openfang_types::agent::{AgentId, AgentManifest};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -849,18 +851,32 @@ fn main() {
             }
             match launcher::run(cli.config.clone()) {
                 launcher::LauncherChoice::GetStarted => cmd_init(false),
+                launcher::LauncherChoice::AutoStartMenu => {},
+                launcher::LauncherChoice::AutoStartOn => cmd_auto_start_on(),
+                launcher::LauncherChoice::AutoStartOff => cmd_auto_start_off(),
                 launcher::LauncherChoice::Chat => cmd_quick_chat(cli.config, None),
                 launcher::LauncherChoice::Dashboard => cmd_dashboard(),
+                launcher::LauncherChoice::ExecPolicyMenu => {},
+                launcher::LauncherChoice::ExecPolicyModeFull => cmd_exec_policy_set_mode("full"),
+                launcher::LauncherChoice::ExecPolicyModeSafe => cmd_exec_policy_set_mode("safe"),
+                launcher::LauncherChoice::ExecPolicyModeAllowlist => cmd_exec_policy_set_mode("allowlist"),
+                launcher::LauncherChoice::ExecPolicyAddAllowed => cmd_exec_policy_add_allowed(),
+                launcher::LauncherChoice::ExecPolicyRemoveAllowed => cmd_exec_policy_remove_allowed(),
+                launcher::LauncherChoice::LocalDashboardMenu => {},
+                launcher::LauncherChoice::LocalDashboardSetApi => cmd_local_dashboard_set_api(),
+                launcher::LauncherChoice::OllamaMenu => {},
                 launcher::LauncherChoice::OllamaStart => cmd_ollama_start_background(),
+                launcher::LauncherChoice::OllamaSetApiKey => cmd_ollama_set_api_key(),
+                launcher::LauncherChoice::OllamaSetModel => cmd_ollama_set_model(),
                 launcher::LauncherChoice::ForceStop => cmd_force_stop(),
-                launcher::LauncherChoice::LocalDashboard => cmd_local_dashboard(),
+                launcher::LauncherChoice::LocalDashboardLaunch => cmd_local_dashboard_launch(),
                 launcher::LauncherChoice::DesktopApp => launcher::launch_desktop_app(),
                 launcher::LauncherChoice::TerminalUI => tui::run(cli.config),
                 launcher::LauncherChoice::ShowHelp => {
                     use clap::CommandFactory;
                     Cli::command().print_help().unwrap();
                     println!();
-                }
+                },
                 launcher::LauncherChoice::Quit => {}
             }
         }
@@ -1499,7 +1515,7 @@ fn cmd_force_stop() {
     }
 }
 
-fn cmd_local_dashboard() {
+fn cmd_local_dashboard_set_api() {
     let home = openfang_home();
     let config_path = home.join("config.toml");
 
@@ -1519,10 +1535,176 @@ fn cmd_local_dashboard() {
 
     let lan_ip = detect_lan_ip().unwrap_or_else(|| "<device-lan-ip>".to_string());
     ui::blank();
-    ui::success("Local dashboard access configured");
+    ui::success("Local dashboard API configured");
     ui::kv("Dashboard", &format!("http://{lan_ip}:4200/"));
     ui::kv("API key", &api_key);
+    ui::hint("Launch the dashboard from Local dashboard > Launch Dashboard.");
     ui::hint("Keep port 4200 blocked from WAN/public access.");
+}
+
+fn cmd_local_dashboard_launch() {
+    let home = openfang_home();
+    let config_path = home.join("config.toml");
+
+    if !config_path.exists() {
+        ui::error_with_fix("No config file found", "Run `openfang init` first");
+        std::process::exit(1);
+    }
+
+    let api_key = read_api_key().unwrap_or_else(|| {
+        ui::error_with_fix(
+            "No dashboard API key configured",
+            "Choose Local dashboard > Set API Dashboard (generate API) first",
+        );
+        std::process::exit(1);
+    });
+
+    cmd_config_set("api_listen", "0.0.0.0:4200");
+
+    match start_daemon_background() {
+        Ok(url) => {
+            let lan_ip = detect_lan_ip().unwrap_or_else(|| "<device-lan-ip>".to_string());
+            ui::blank();
+            ui::success("Local dashboard launched");
+            ui::kv("Daemon", &url);
+            ui::kv("Dashboard", &format!("http://{lan_ip}:4200/"));
+            ui::kv("API key", &api_key);
+            ui::hint("Using existing local dashboard API key.");
+            ui::hint("Keep port 4200 blocked from WAN/public access.");
+        }
+        Err(e) => {
+            ui::error_with_fix(
+                &format!("Could not start daemon: {e}"),
+                "Start it manually with: openfang start",
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_auto_start_on() {
+    let service_path = ensure_openwrt_service_script();
+    run_openwrt_service_command(&service_path, "enable");
+    run_openwrt_service_command(&service_path, "start");
+    ui::success("OpenFang auto-start enabled");
+    ui::hint("OpenFang will auto-start on OpenWrt device wakeup/reboot.");
+}
+
+fn cmd_auto_start_off() {
+    let service_path = openwrt_service_path();
+    if !service_path.exists() {
+        ui::warn_with_fix(
+            "OpenFang auto-start service is not installed",
+            "Turn it on first from Auto start > ON",
+        );
+        return;
+    }
+
+    run_openwrt_service_command(&service_path, "disable");
+    run_openwrt_service_command(&service_path, "stop");
+    ui::success("OpenFang auto-start disabled");
+    ui::hint("OpenFang will no longer auto-start on reboot.");
+}
+
+fn cmd_exec_policy_set_mode(mode: &str) {
+    let config_path = ensure_config_path();
+    let mut table = load_config_table(&config_path);
+    let exec_policy = ensure_table_path(&mut table, &["exec_policy"]);
+
+    match mode {
+        "full" => {
+            exec_policy.insert("mode".to_string(), toml::Value::String("full".to_string()));
+        }
+        "safe" => {
+            // "safe" is represented by allowlist mode plus safe_bins entries.
+            exec_policy.insert("mode".to_string(), toml::Value::String("allowlist".to_string()));
+            exec_policy
+                .entry("safe_bins".to_string())
+                .or_insert_with(|| toml::Value::Array(Vec::new()));
+            exec_policy
+                .entry("allowed_commands".to_string())
+                .or_insert_with(|| toml::Value::Array(Vec::new()));
+        }
+        "allowlist" => {
+            exec_policy.insert("mode".to_string(), toml::Value::String("allowlist".to_string()));
+            exec_policy
+                .entry("allowed_commands".to_string())
+                .or_insert_with(|| toml::Value::Array(Vec::new()));
+        }
+        _ => {
+            ui::error(&format!("Unsupported exec policy mode: {mode}"));
+            std::process::exit(1);
+        }
+    }
+
+    save_config_table(&config_path, &table);
+    if mode == "safe" {
+        ui::success("Set exec_policy mode to safe (stored as allowlist + safe_bins)");
+    } else {
+        ui::success(&format!("Set exec_policy mode to {mode}"));
+    }
+}
+
+fn cmd_exec_policy_add_allowed() {
+    let current_mode = read_exec_policy_mode().unwrap_or_else(|| "allowlist".to_string());
+    if current_mode == "full" {
+        ui::warn_with_fix(
+            "Exec policy is set to full",
+            "Switch to safe or allowlist mode before editing the whitelist",
+        );
+        return;
+    }
+
+    let prompt = if exec_policy_uses_safe_bins() {
+        "Add safe bin"
+    } else {
+        "Add allowed command"
+    };
+    let value = prompt_line(prompt)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            ui::error("No command entered");
+            std::process::exit(1);
+        });
+
+    let key = if exec_policy_uses_safe_bins() {
+        "exec_policy.safe_bins"
+    } else {
+        "exec_policy.allowed_commands"
+    };
+    cmd_config_array_add(key, &value);
+}
+
+fn cmd_exec_policy_remove_allowed() {
+    let current_mode = read_exec_policy_mode().unwrap_or_else(|| "allowlist".to_string());
+    if current_mode == "full" {
+        ui::warn_with_fix(
+            "Exec policy is set to full",
+            "Switch to safe or allowlist mode before editing the whitelist",
+        );
+        return;
+    }
+
+    let prompt = if exec_policy_uses_safe_bins() {
+        "Remove safe bin"
+    } else {
+        "Remove allowed command"
+    };
+    let value = prompt_line(prompt)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            ui::error("No command entered");
+            std::process::exit(1);
+        });
+
+    let key = if exec_policy_uses_safe_bins() {
+        "exec_policy.safe_bins"
+    } else {
+        "exec_policy.allowed_commands"
+    };
+    cmd_config_array_remove(key, &value);
 }
 
 fn cmd_ollama_start_background() {
@@ -1534,8 +1716,14 @@ fn cmd_ollama_start_background() {
         std::process::exit(1);
     }
 
+    let model = read_default_model_value("provider")
+        .filter(|provider| provider == "ollama")
+        .and_then(|_| read_default_model_value("model"))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "glm-5:cloud".to_string());
+
     cmd_config_set("default_model.provider", "ollama");
-    cmd_config_set("default_model.model", "glm-5:cloud");
+    cmd_config_set("default_model.model", &model);
     cmd_config_set("default_model.api_key_env", "OLLAMA_API_KEY");
 
     match start_daemon_background() {
@@ -1544,7 +1732,7 @@ fn cmd_ollama_start_background() {
             ui::success("OpenFang started in background with Ollama");
             ui::kv("Daemon", &url);
             ui::kv("Provider", "ollama");
-            ui::kv("Model", "glm-5:cloud");
+            ui::kv("Model", &model);
         }
         Err(e) => {
             ui::error_with_fix(
@@ -1553,6 +1741,291 @@ fn cmd_ollama_start_background() {
             );
             std::process::exit(1);
         }
+    }
+}
+
+fn cmd_ollama_set_api_key() {
+    let home = openfang_home();
+    let config_path = home.join("config.toml");
+    if !config_path.exists() {
+        ui::error_with_fix("No config file found", "Run `openfang init` first");
+        std::process::exit(1);
+    }
+
+    let api_key = prompt_line("Enter Ollama API key")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            ui::error_with_fix("No API key entered", "Run `openfang` again and choose Ollama start > Set API key");
+            std::process::exit(1);
+        });
+
+    if let Err(e) = dotenv::save_secret_env_key("OLLAMA_API_KEY", &api_key) {
+        ui::error_with_fix("Failed to save OLLAMA_API_KEY", &e);
+        std::process::exit(1);
+    }
+
+    cmd_config_set("default_model.provider", "ollama");
+    cmd_config_set("default_model.api_key_env", "OLLAMA_API_KEY");
+    ui::success("Saved OLLAMA_API_KEY to ~/.openfang/secrets.env");
+}
+
+fn cmd_ollama_set_model() {
+    let home = openfang_home();
+    let config_path = home.join("config.toml");
+    if !config_path.exists() {
+        ui::error_with_fix("No config file found", "Run `openfang init` first");
+        std::process::exit(1);
+    }
+
+    let current = read_default_model_value("provider")
+        .filter(|provider| provider == "ollama")
+        .and_then(|_| read_default_model_value("model"))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "glm-5:cloud".to_string());
+    let prompt = format!("Enter default Ollama model [{current}]");
+    let model = prompt_line(&prompt)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(current);
+
+    cmd_config_set("default_model.provider", "ollama");
+    cmd_config_set("default_model.model", &model);
+    cmd_config_set("default_model.api_key_env", "OLLAMA_API_KEY");
+    ui::success(&format!("Set default Ollama model to {model}"));
+}
+
+fn prompt_line(prompt: &str) -> Option<String> {
+    print!("{prompt}: ");
+    let _ = io::stdout().flush();
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).ok()? == 0 {
+        return None;
+    }
+    Some(input.trim_end_matches(['\r', '\n']).to_string())
+}
+
+fn read_default_model_value(key: &str) -> Option<String> {
+    let config_path = openfang_home().join("config.toml");
+    let text = std::fs::read_to_string(config_path).ok()?;
+    let table: toml::Value = text.parse().ok()?;
+    table
+        .get("default_model")?
+        .get(key)?
+        .as_str()
+        .map(ToString::to_string)
+}
+
+fn read_exec_policy_mode() -> Option<String> {
+    let config_path = openfang_home().join("config.toml");
+    let text = std::fs::read_to_string(config_path).ok()?;
+    let table: toml::Value = text.parse().ok()?;
+    table
+        .get("exec_policy")?
+        .get("mode")?
+        .as_str()
+        .map(ToString::to_string)
+}
+
+fn exec_policy_uses_safe_bins() -> bool {
+    let config_path = openfang_home().join("config.toml");
+    let text = match std::fs::read_to_string(config_path) {
+        Ok(text) => text,
+        Err(_) => return false,
+    };
+    let table: toml::Value = match text.parse() {
+        Ok(table) => table,
+        Err(_) => return false,
+    };
+    table
+        .get("exec_policy")
+        .and_then(|v| v.get("safe_bins"))
+        .and_then(|v| v.as_array())
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
+fn ensure_config_path() -> PathBuf {
+    let config_path = openfang_home().join("config.toml");
+    if !config_path.exists() {
+        ui::error_with_fix("No config file found", "Run `openfang init` first");
+        std::process::exit(1);
+    }
+    config_path
+}
+
+fn load_config_table(config_path: &std::path::Path) -> toml::Value {
+    let content = std::fs::read_to_string(config_path).unwrap_or_else(|e| {
+        ui::error(&format!("Failed to read config: {e}"));
+        std::process::exit(1);
+    });
+    toml::from_str(&content).unwrap_or_else(|e| {
+        ui::error_with_fix(
+            &format!("Config parse error: {e}"),
+            "Fix your config.toml syntax first",
+        );
+        std::process::exit(1);
+    })
+}
+
+fn save_config_table(config_path: &std::path::Path, table: &toml::Value) {
+    let serialized = toml::to_string_pretty(table).unwrap_or_else(|e| {
+        ui::error(&format!("Failed to serialize config: {e}"));
+        std::process::exit(1);
+    });
+    std::fs::write(config_path, &serialized).unwrap_or_else(|e| {
+        ui::error(&format!("Failed to write config: {e}"));
+        std::process::exit(1);
+    });
+    restrict_file_permissions(config_path);
+}
+
+fn ensure_table_path<'a>(
+    table: &'a mut toml::Value,
+    parts: &[&str],
+) -> &'a mut toml::map::Map<String, toml::Value> {
+    let mut current = table
+        .as_table_mut()
+        .unwrap_or_else(|| {
+            ui::error("Config root is not a table");
+            std::process::exit(1);
+        });
+
+    for part in parts {
+        let value = current
+            .entry((*part).to_string())
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        current = value.as_table_mut().unwrap_or_else(|| {
+            ui::error(&format!("'{part}' is not a table"));
+            std::process::exit(1);
+        });
+    }
+
+    current
+}
+
+fn cmd_config_array_add(key: &str, value: &str) {
+    let config_path = ensure_config_path();
+    let mut table = load_config_table(&config_path);
+    let parts: Vec<&str> = key.split('.').collect();
+    if parts.len() < 2 {
+        ui::error(&format!("Array key path not supported: {key}"));
+        std::process::exit(1);
+    }
+    let parent = ensure_table_path(&mut table, &parts[..parts.len() - 1]);
+    let last_key = parts[parts.len() - 1];
+    let entry = parent
+        .entry(last_key.to_string())
+        .or_insert_with(|| toml::Value::Array(Vec::new()));
+    let arr = entry.as_array_mut().unwrap_or_else(|| {
+        ui::error(&format!("Key '{key}' is not an array"));
+        std::process::exit(1);
+    });
+    if !arr.iter().any(|item| item.as_str() == Some(value)) {
+        arr.push(toml::Value::String(value.to_string()));
+    }
+    save_config_table(&config_path, &table);
+    ui::success(&format!("Added {value} to {key}"));
+}
+
+fn cmd_config_array_remove(key: &str, value: &str) {
+    let config_path = ensure_config_path();
+    let mut table = load_config_table(&config_path);
+    let parts: Vec<&str> = key.split('.').collect();
+    if parts.len() < 2 {
+        ui::error(&format!("Array key path not supported: {key}"));
+        std::process::exit(1);
+    }
+    let parent = ensure_table_path(&mut table, &parts[..parts.len() - 1]);
+    let last_key = parts[parts.len() - 1];
+    let entry = parent
+        .entry(last_key.to_string())
+        .or_insert_with(|| toml::Value::Array(Vec::new()));
+    let arr = entry.as_array_mut().unwrap_or_else(|| {
+        ui::error(&format!("Key '{key}' is not an array"));
+        std::process::exit(1);
+    });
+    let before = arr.len();
+    arr.retain(|item| item.as_str() != Some(value));
+    if arr.len() == before {
+        ui::warn_with_fix(
+            &format!("{value} not found in {key}"),
+            "Use the exact command or binary name currently stored in config.toml",
+        );
+        return;
+    }
+    save_config_table(&config_path, &table);
+    ui::success(&format!("Removed {value} from {key}"));
+}
+
+fn openwrt_service_path() -> PathBuf {
+    PathBuf::from("/etc/init.d/openfang")
+}
+
+fn ensure_openwrt_service_script() -> PathBuf {
+    let service_path = openwrt_service_path();
+    let exe = std::env::current_exe().unwrap_or_else(|e| {
+        ui::error(&format!("Cannot find executable: {e}"));
+        std::process::exit(1);
+    });
+    let exe_str = exe.display().to_string();
+    let script = format!(
+        r#"#!/bin/sh /etc/rc.common
+START=99
+STOP=10
+USE_PROCD=1
+
+PROG="{exe}"
+HOME_DIR="/root"
+
+start_service() {{
+    procd_open_instance
+    procd_set_param command "$PROG" start
+    procd_set_param env HOME="$HOME_DIR"
+    procd_set_param respawn
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
+}}
+
+stop_service() {{
+    service_stop "$PROG"
+}}
+"#,
+        exe = exe_str
+    );
+
+    std::fs::write(&service_path, script).unwrap_or_else(|e| {
+        ui::error_with_fix(
+            &format!("Failed to write {}", service_path.display()),
+            &e.to_string(),
+        );
+        std::process::exit(1);
+    });
+    #[cfg(unix)]
+    {
+        let _ = std::fs::set_permissions(&service_path, std::fs::Permissions::from_mode(0o755));
+    }
+    service_path
+}
+
+fn run_openwrt_service_command(service_path: &std::path::Path, command: &str) {
+    let status = std::process::Command::new(service_path)
+        .arg(command)
+        .status()
+        .unwrap_or_else(|e| {
+            ui::error_with_fix(
+                &format!("Failed to run {} {}", service_path.display(), command),
+                &e.to_string(),
+            );
+            std::process::exit(1);
+        });
+    if !status.success() {
+        ui::error_with_fix(
+            &format!("Service command failed: {} {}", service_path.display(), command),
+            "Check OpenWrt service support and file permissions",
+        );
+        std::process::exit(1);
     }
 }
 

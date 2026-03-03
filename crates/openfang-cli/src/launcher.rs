@@ -58,11 +58,25 @@ fn has_openclaw() -> bool {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LauncherChoice {
     GetStarted,
+    AutoStartMenu,
+    AutoStartOn,
+    AutoStartOff,
     Chat,
     Dashboard,
+    ExecPolicyMenu,
+    ExecPolicyModeFull,
+    ExecPolicyModeSafe,
+    ExecPolicyModeAllowlist,
+    ExecPolicyAddAllowed,
+    ExecPolicyRemoveAllowed,
+    LocalDashboardMenu,
+    LocalDashboardSetApi,
+    OllamaMenu,
     OllamaStart,
+    OllamaSetApiKey,
+    OllamaSetModel,
     ForceStop,
-    LocalDashboard,
+    LocalDashboardLaunch,
     DesktopApp,
     TerminalUI,
     ShowHelp,
@@ -82,29 +96,39 @@ const MENU_FIRST_RUN: &[MenuItem] = &[
         hint: "Providers, API keys, models, migration",
         choice: LauncherChoice::GetStarted,
     },
-    MenuItem {
-        label: "Chat with an agent",
-        hint: "Quick chat in the terminal",
-        choice: LauncherChoice::Chat,
-    },
-    MenuItem {
-        label: "Open dashboard",
-        hint: "Launch the web UI in your browser",
+      MenuItem {
+          label: "Chat with an agent",
+          hint: "Quick chat in the terminal",
+          choice: LauncherChoice::Chat,
+      },
+      MenuItem {
+          label: "Auto start",
+          hint: "OpenWrt service auto-start on device wakeup/reboot",
+          choice: LauncherChoice::AutoStartMenu,
+      },
+      MenuItem {
+          label: "Open dashboard",
+          hint: "Launch the web UI in your browser",
         choice: LauncherChoice::Dashboard,
     },
     MenuItem {
         label: "Local dashboard",
         hint: "LAN-only dashboard setup with generated API key",
-        choice: LauncherChoice::LocalDashboard,
+        choice: LauncherChoice::LocalDashboardMenu,
     },
-    MenuItem {
-        label: "Ollama start",
-        hint: "Set Ollama as default provider and start in background",
-        choice: LauncherChoice::OllamaStart,
-    },
-    MenuItem {
-        label: "Open desktop app",
-        hint: "Launch the native desktop app",
+      MenuItem {
+          label: "Ollama start",
+          hint: "Set Ollama as default provider and start in background",
+          choice: LauncherChoice::OllamaMenu,
+      },
+      MenuItem {
+          label: "Exec policy",
+          hint: "Shell execution mode and allowlist management",
+          choice: LauncherChoice::ExecPolicyMenu,
+      },
+      MenuItem {
+          label: "Open desktop app",
+          hint: "Launch the native desktop app",
         choice: LauncherChoice::DesktopApp,
     },
     MenuItem {
@@ -121,29 +145,39 @@ const MENU_FIRST_RUN: &[MenuItem] = &[
 
 // Menu for returning users: action-first, setup at the bottom
 const MENU_RETURNING: &[MenuItem] = &[
-    MenuItem {
-        label: "Chat with an agent",
-        hint: "Quick chat in the terminal",
-        choice: LauncherChoice::Chat,
-    },
-    MenuItem {
-        label: "Open dashboard",
-        hint: "Launch the web UI in your browser",
+      MenuItem {
+          label: "Chat with an agent",
+          hint: "Quick chat in the terminal",
+          choice: LauncherChoice::Chat,
+      },
+      MenuItem {
+          label: "Auto start",
+          hint: "OpenWrt service auto-start on device wakeup/reboot",
+          choice: LauncherChoice::AutoStartMenu,
+      },
+      MenuItem {
+          label: "Open dashboard",
+          hint: "Launch the web UI in your browser",
         choice: LauncherChoice::Dashboard,
     },
     MenuItem {
         label: "Local dashboard",
         hint: "LAN-only dashboard setup with generated API key",
-        choice: LauncherChoice::LocalDashboard,
+        choice: LauncherChoice::LocalDashboardMenu,
     },
-    MenuItem {
-        label: "Ollama start",
-        hint: "Set Ollama as default provider and start in background",
-        choice: LauncherChoice::OllamaStart,
-    },
-    MenuItem {
-        label: "Force stop",
-        hint: "Kill the running daemon immediately",
+      MenuItem {
+          label: "Ollama start",
+          hint: "Set Ollama as default provider and start in background",
+          choice: LauncherChoice::OllamaMenu,
+      },
+      MenuItem {
+          label: "Exec policy",
+          hint: "Shell execution mode and allowlist management",
+          choice: LauncherChoice::ExecPolicyMenu,
+      },
+      MenuItem {
+          label: "Force stop",
+          hint: "Kill the running daemon immediately",
         choice: LauncherChoice::ForceStop,
     },
     MenuItem {
@@ -168,6 +202,107 @@ const MENU_RETURNING: &[MenuItem] = &[
     },
 ];
 
+const MENU_OLLAMA: &[MenuItem] = &[
+    MenuItem {
+        label: "Start with Ollama",
+        hint: "Set Ollama as default provider and start in background",
+        choice: LauncherChoice::OllamaStart,
+    },
+    MenuItem {
+        label: "Set API key",
+        hint: "Save OLLAMA_API_KEY into ~/.openfang/secrets.env",
+        choice: LauncherChoice::OllamaSetApiKey,
+    },
+    MenuItem {
+        label: "Set model",
+        hint: "Choose the default Ollama model used on start",
+        choice: LauncherChoice::OllamaSetModel,
+    },
+    MenuItem {
+        label: "Back",
+        hint: "Return to the main launcher menu",
+        choice: LauncherChoice::Quit,
+    },
+];
+
+const MENU_LOCAL_DASHBOARD: &[MenuItem] = &[
+    MenuItem {
+        label: "Set API Dashboard (generate API)",
+        hint: "Generate and save a dashboard API key for LAN access",
+        choice: LauncherChoice::LocalDashboardSetApi,
+    },
+    MenuItem {
+        label: "Launch Dashboard",
+        hint: "Launch LAN dashboard using the existing API key",
+        choice: LauncherChoice::LocalDashboardLaunch,
+    },
+    MenuItem {
+        label: "Back",
+        hint: "Return to the main launcher menu",
+        choice: LauncherChoice::Quit,
+    },
+];
+
+const MENU_EXEC_POLICY: &[MenuItem] = &[
+    MenuItem {
+        label: "Set mode = full",
+        hint: "Full shell access for agents",
+        choice: LauncherChoice::ExecPolicyModeFull,
+    },
+    MenuItem {
+        label: "Set mode = safe",
+        hint: "Safe shell mode using safe_bins allowlist",
+        choice: LauncherChoice::ExecPolicyModeSafe,
+    },
+    MenuItem {
+        label: "Set mode = allowlist",
+        hint: "Only explicitly allowed shell commands can run",
+        choice: LauncherChoice::ExecPolicyModeAllowlist,
+    },
+    MenuItem {
+        label: "Add whitelist cmd",
+        hint: "Add a safe bin or allowed command based on the current mode",
+        choice: LauncherChoice::ExecPolicyAddAllowed,
+    },
+    MenuItem {
+        label: "Remove whitelist cmd",
+        hint: "Remove a safe bin or allowed command based on the current mode",
+        choice: LauncherChoice::ExecPolicyRemoveAllowed,
+    },
+    MenuItem {
+        label: "Back",
+        hint: "Return to the main launcher menu",
+        choice: LauncherChoice::Quit,
+    },
+];
+
+const MENU_AUTO_START: &[MenuItem] = &[
+    MenuItem {
+        label: "ON",
+        hint: "Enable OpenWrt auto-start service and start OpenFang now",
+        choice: LauncherChoice::AutoStartOn,
+    },
+    MenuItem {
+        label: "OFF",
+        hint: "Disable OpenWrt auto-start service and stop OpenFang service",
+        choice: LauncherChoice::AutoStartOff,
+    },
+    MenuItem {
+        label: "Back",
+        hint: "Return to the main launcher menu",
+        choice: LauncherChoice::Quit,
+    },
+];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MenuMode {
+    Main,
+    AutoStart,
+    ExecPolicy,
+    LocalDashboard,
+    Ollama,
+}
+
 // ── Launcher state ──────────────────────────────────────────────────────────
 
 struct LauncherState {
@@ -178,6 +313,7 @@ struct LauncherState {
     tick: usize,
     first_run: bool,
     openclaw_detected: bool,
+    menu_mode: MenuMode,
 }
 
 impl LauncherState {
@@ -194,14 +330,23 @@ impl LauncherState {
             tick: 0,
             first_run,
             openclaw_detected,
+            menu_mode: MenuMode::Main,
         }
     }
 
     fn menu(&self) -> &'static [MenuItem] {
-        if self.first_run {
-            MENU_FIRST_RUN
-        } else {
-            MENU_RETURNING
+        match self.menu_mode {
+            MenuMode::Main => {
+                if self.first_run {
+                    MENU_FIRST_RUN
+                } else {
+                    MENU_RETURNING
+                }
+            }
+            MenuMode::AutoStart => MENU_AUTO_START,
+            MenuMode::ExecPolicy => MENU_EXEC_POLICY,
+            MenuMode::LocalDashboard => MENU_LOCAL_DASHBOARD,
+            MenuMode::Ollama => MENU_OLLAMA,
         }
     }
 }
@@ -273,8 +418,16 @@ pub fn run(_config: Option<PathBuf>) -> LauncherChoice {
                 }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => {
-                        choice = LauncherChoice::Quit;
-                        break;
+                        if matches!(
+                            state.menu_mode,
+                            MenuMode::Ollama | MenuMode::LocalDashboard | MenuMode::ExecPolicy | MenuMode::AutoStart
+                        ) {
+                            state.menu_mode = MenuMode::Main;
+                            state.list.select(Some(0));
+                        } else {
+                            choice = LauncherChoice::Quit;
+                            break;
+                        }
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         let i = state.list.selected().unwrap_or(0);
@@ -289,8 +442,37 @@ pub fn run(_config: Option<PathBuf>) -> LauncherChoice {
                     KeyCode::Enter => {
                         if let Some(i) = state.list.selected() {
                             if i < menu.len() {
-                                choice = menu[i].choice;
-                                break;
+                                match menu[i].choice {
+                                    LauncherChoice::AutoStartMenu => {
+                                        state.menu_mode = MenuMode::AutoStart;
+                                        state.list.select(Some(0));
+                                    }
+                                    LauncherChoice::ExecPolicyMenu => {
+                                        state.menu_mode = MenuMode::ExecPolicy;
+                                        state.list.select(Some(0));
+                                    }
+                                    LauncherChoice::LocalDashboardMenu => {
+                                        state.menu_mode = MenuMode::LocalDashboard;
+                                        state.list.select(Some(0));
+                                    }
+                                    LauncherChoice::OllamaMenu => {
+                                        state.menu_mode = MenuMode::Ollama;
+                                        state.list.select(Some(0));
+                                    }
+                                    LauncherChoice::Quit
+                                        if matches!(
+                                            state.menu_mode,
+                                            MenuMode::Ollama | MenuMode::LocalDashboard | MenuMode::ExecPolicy | MenuMode::AutoStart
+                                        ) =>
+                                    {
+                                        state.menu_mode = MenuMode::Main;
+                                        state.list.select(Some(0));
+                                    }
+                                    other => {
+                                        choice = other;
+                                        break;
+                                    }
+                                }
                             }
                         }
                     }

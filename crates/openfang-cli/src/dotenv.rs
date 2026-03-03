@@ -59,20 +59,21 @@ fn load_env_file(path: Option<PathBuf>) {
 /// Also sets the key in the current process environment.
 pub fn save_env_key(key: &str, value: &str) -> Result<(), String> {
     let path = env_file_path().ok_or("Could not determine home directory")?;
+    save_env_key_at_path(path, key, value, "# OpenFang environment — managed by `openfang config set-key`\n# Do not edit while the daemon is running.\n\n")
+}
 
-    // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {e}"))?;
-    }
-
-    let mut entries = read_env_file(&path);
-    entries.insert(key.to_string(), value.to_string());
-    write_env_file(&path, &entries)?;
-
-    // Also set in current process
-    std::env::set_var(key, value);
-
-    Ok(())
+/// Upsert a key in `~/.openfang/secrets.env`.
+///
+/// Creates the file if missing. Sets 0600 permissions on Unix.
+/// Also sets the key in the current process environment.
+pub fn save_secret_env_key(key: &str, value: &str) -> Result<(), String> {
+    let path = secrets_env_path().ok_or("Could not determine home directory")?;
+    save_env_key_at_path(
+        path,
+        key,
+        value,
+        "# OpenFang secrets — managed by OpenFang\n# Do not edit while the daemon is running.\n\n",
+    )
 }
 
 /// Remove a key from `~/.openfang/.env`.
@@ -83,7 +84,11 @@ pub fn remove_env_key(key: &str) -> Result<(), String> {
 
     let mut entries = read_env_file(&path);
     entries.remove(key);
-    write_env_file(&path, &entries)?;
+    write_env_file(
+        &path,
+        &entries,
+        "# OpenFang environment — managed by `openfang config set-key`\n# Do not edit while the daemon is running.\n\n",
+    )?;
 
     std::env::remove_var(key);
 
@@ -154,11 +159,22 @@ fn read_env_file(path: &PathBuf) -> BTreeMap<String, String> {
     map
 }
 
+fn save_env_key_at_path(path: PathBuf, key: &str, value: &str, header: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {e}"))?;
+    }
+
+    let mut entries = read_env_file(&path);
+    entries.insert(key.to_string(), value.to_string());
+    write_env_file(&path, &entries, header)?;
+
+    std::env::set_var(key, value);
+    Ok(())
+}
+
 /// Write key-value pairs back to the .env file with a header comment.
-fn write_env_file(path: &PathBuf, entries: &BTreeMap<String, String>) -> Result<(), String> {
-    let mut content =
-        String::from("# OpenFang environment — managed by `openfang config set-key`\n");
-    content.push_str("# Do not edit while the daemon is running.\n\n");
+fn write_env_file(path: &PathBuf, entries: &BTreeMap<String, String>, header: &str) -> Result<(), String> {
+    let mut content = String::from(header);
 
     for (key, value) in entries {
         // Quote values that contain spaces or special characters
