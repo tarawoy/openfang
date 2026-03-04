@@ -1753,7 +1753,6 @@ fn cmd_ollama_start_background() {
 
     cmd_config_set("default_model.provider", "ollama");
     cmd_config_set("default_model.model", &model);
-    cmd_config_set("default_model.api_key_env", "OLLAMA_API_KEY");
 
     match start_daemon_background() {
         Ok(url) => {
@@ -1820,7 +1819,6 @@ fn cmd_ollama_set_model() {
 
     cmd_config_set("default_model.provider", "ollama");
     cmd_config_set("default_model.model", &model);
-    cmd_config_set("default_model.api_key_env", "OLLAMA_API_KEY");
     ui::success(&format!("Set default Ollama model to {model}"));
 }
 
