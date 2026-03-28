@@ -168,9 +168,28 @@ impl HandRegistry {
         Ok(def)
     }
 
+    /// Install or update a hand from raw TOML + skill content.
+    ///
+    /// Unlike `install_from_content`, this overwrites an existing definition
+    /// with the same ID.  Active instances are NOT automatically restarted —
+    /// the caller should deactivate + reactivate to pick up the new definition.
+    pub fn upsert_from_content(
+        &self,
+        toml_content: &str,
+        skill_content: &str,
+    ) -> HandResult<HandDefinition> {
+        let def = bundled::parse_bundled("custom", toml_content, skill_content)?;
+        let existed = self.definitions.contains_key(&def.id);
+        let verb = if existed { "Updated" } else { "Installed" };
+        info!(hand = %def.id, name = %def.name, "{verb} hand from content");
+        self.definitions.insert(def.id.clone(), def.clone());
+        Ok(def)
+    }
+
     /// List all known hand definitions.
     pub fn list_definitions(&self) -> Vec<HandDefinition> {
-        let mut defs: Vec<HandDefinition> = self.definitions.iter().map(|r| r.value().clone()).collect();
+        let mut defs: Vec<HandDefinition> =
+            self.definitions.iter().map(|r| r.value().clone()).collect();
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs
     }
@@ -352,6 +371,50 @@ impl HandRegistry {
         entry.updated_at = chrono::Utc::now();
         Ok(())
     }
+
+    /// Compute readiness for a hand, cross-referencing requirements with
+    /// active instance state.
+    ///
+    /// Returns `None` if the hand definition does not exist.
+    pub fn readiness(&self, hand_id: &str) -> Option<HandReadiness> {
+        let reqs = self.check_requirements(hand_id).ok()?;
+
+        // Only non-optional requirements gate readiness.
+        // Optional requirements (e.g. chromium for browser hand) are nice-to-have;
+        // missing them results in "degraded" status but not "requirements not met".
+        let requirements_met = reqs.iter().all(|(req, ok)| *ok || req.optional);
+
+        // A hand is active if at least one instance is in Active status.
+        let active = self
+            .instances
+            .iter()
+            .any(|entry| entry.hand_id == hand_id && entry.status == HandStatus::Active);
+
+        // Degraded: active, but at least one non-optional requirement is unmet
+        // OR any optional requirement is unmet. In practice, the most useful
+        // definition is: active + any requirement unsatisfied.
+        let degraded = active && reqs.iter().any(|(_, ok)| !ok);
+
+        Some(HandReadiness {
+            requirements_met,
+            active,
+            degraded,
+        })
+    }
+}
+
+/// Readiness snapshot for a hand definition — combines requirement checks
+/// with runtime activation state so the API can report unambiguous status.
+#[derive(Debug, Clone, Serialize)]
+pub struct HandReadiness {
+    /// Whether all declared requirements are currently satisfied.
+    pub requirements_met: bool,
+    /// Whether the hand currently has a running (Active-status) instance.
+    pub active: bool,
+    /// Whether the hand is active but some requirements are unmet.
+    /// This means the hand is running in a degraded mode — some features
+    /// may not work (e.g. browser hand without chromium).
+    pub degraded: bool,
 }
 
 impl Default for HandRegistry {
@@ -364,10 +427,13 @@ impl Default for HandRegistry {
 fn check_requirement(req: &HandRequirement) -> bool {
     match req.requirement_type {
         RequirementType::Binary => {
-            // Special handling for python3: must actually run the command and verify
-            // the output contains "Python 3", because Windows ships a python3.exe
-            // Store shim that exists on PATH but doesn't actually work.
-            if req.check_value == "python3" {
+            // Special handling for python3 / python: must actually run the command
+            // and verify the output contains "Python 3", because:
+            //  - Windows ships a python3.exe Store shim that doesn't actually work
+            //  - Most modern Linux distros only ship "python3", not "python"
+            //  - Some Docker images only have "python" pointing to Python 3
+            // Matches the detection logic in python_runtime.rs find_python_interpreter().
+            if req.check_value == "python3" || req.check_value == "python" {
                 return check_python3_available();
             }
             // Check if binary exists on PATH.
@@ -375,12 +441,7 @@ fn check_requirement(req: &HandRequirement) -> bool {
                 return true;
             }
             if req.check_value == "chromium" {
-                // Try common Chromium/Chrome binary names across platforms
-                return which_binary("chromium-browser")
-                    || which_binary("google-chrome")
-                    || which_binary("google-chrome-stable")
-                    || which_binary("chrome")
-                    || std::env::var("CHROME_PATH").map(|v| !v.is_empty()).unwrap_or(false);
+                return check_chromium_available();
             }
             false
         }
@@ -429,6 +490,95 @@ fn run_returns_python3(cmd: &str) -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// Check if Chromium (or Chrome) is available anywhere on the system.
+///
+/// Checks in order:
+/// 1. CHROME_PATH / CHROMIUM_PATH env vars
+/// 2. Common binary names on PATH (chromium, chromium-browser, google-chrome, etc.)
+/// 3. Well-known install paths (Windows Program Files, macOS Applications, Linux /usr)
+/// 4. Playwright cache (~/.cache/ms-playwright/chromium-*)
+fn check_chromium_available() -> bool {
+    // 1. Env vars
+    for var in &["CHROME_PATH", "CHROMIUM_PATH"] {
+        if let Ok(p) = std::env::var(var) {
+            if !p.is_empty() && std::path::Path::new(&p).exists() {
+                return true;
+            }
+        }
+    }
+
+    // 2. Common binary names on PATH
+    let names = [
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "google-chrome-stable",
+        "chrome",
+    ];
+    for name in &names {
+        if which_binary(name) {
+            return true;
+        }
+    }
+
+    // 3. Well-known install paths
+    let known_paths: Vec<std::path::PathBuf> = if cfg!(windows) {
+        let pf = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+        let pf86 =
+            std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| r"C:\Program Files (x86)".into());
+        let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+        vec![
+            std::path::PathBuf::from(&pf).join(r"Google\Chrome\Application\chrome.exe"),
+            std::path::PathBuf::from(&pf86).join(r"Google\Chrome\Application\chrome.exe"),
+            std::path::PathBuf::from(&local).join(r"Google\Chrome\Application\chrome.exe"),
+            std::path::PathBuf::from(&pf).join(r"Chromium\Application\chrome.exe"),
+            std::path::PathBuf::from(&local).join(r"Chromium\Application\chrome.exe"),
+            std::path::PathBuf::from(&pf).join(r"Microsoft\Edge\Application\msedge.exe"),
+        ]
+    } else if cfg!(target_os = "macos") {
+        vec![
+            std::path::PathBuf::from(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
+            std::path::PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        ]
+    } else {
+        vec![
+            std::path::PathBuf::from("/usr/bin/chromium"),
+            std::path::PathBuf::from("/usr/bin/chromium-browser"),
+            std::path::PathBuf::from("/usr/bin/google-chrome"),
+            std::path::PathBuf::from("/usr/bin/google-chrome-stable"),
+            std::path::PathBuf::from("/snap/bin/chromium"),
+        ]
+    };
+    for p in &known_paths {
+        if p.exists() {
+            return true;
+        }
+    }
+
+    // 4. Playwright cache
+    if let Some(home) = std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+    {
+        let pw_cache = std::path::Path::new(&home).join(".cache/ms-playwright");
+        if pw_cache.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&pw_cache) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.starts_with("chromium-") && entry.path().is_dir() {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }
 
 /// Check if a binary is on PATH (cross-platform).
@@ -498,7 +648,7 @@ mod tests {
     fn load_bundled_hands() {
         let reg = HandRegistry::new();
         let count = reg.load_bundled();
-        assert_eq!(count, 8);
+        assert_eq!(count, 9);
         assert!(!reg.list_definitions().is_empty());
 
         // Clip hand should be loaded
@@ -638,6 +788,7 @@ mod tests {
             requirement_type: RequirementType::EnvVar,
             check_value: "OPENFANG_TEST_HAND_REQ".to_string(),
             description: None,
+            optional: false,
             install: None,
         };
         assert!(check_requirement(&req));
@@ -648,9 +799,102 @@ mod tests {
             requirement_type: RequirementType::EnvVar,
             check_value: "OPENFANG_NONEXISTENT_VAR_12345".to_string(),
             description: None,
+            optional: false,
             install: None,
         };
         assert!(!check_requirement(&req_missing));
         std::env::remove_var("OPENFANG_TEST_HAND_REQ");
+    }
+
+    #[test]
+    fn readiness_nonexistent_hand() {
+        let reg = HandRegistry::new();
+        assert!(reg.readiness("nonexistent").is_none());
+    }
+
+    #[test]
+    fn readiness_inactive_hand() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        // Lead hand has no requirements, so requirements_met = true
+        let r = reg.readiness("lead").unwrap();
+        assert!(r.requirements_met);
+        assert!(!r.active);
+        assert!(!r.degraded);
+    }
+
+    #[test]
+    fn readiness_active_hand_all_met() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        // Lead hand has no requirements — activate it
+        let instance = reg.activate("lead", HashMap::new()).unwrap();
+        let r = reg.readiness("lead").unwrap();
+        assert!(r.requirements_met);
+        assert!(r.active);
+        assert!(!r.degraded); // all met, so not degraded
+
+        reg.deactivate(instance.instance_id).unwrap();
+    }
+
+    #[test]
+    fn readiness_active_hand_degraded() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        // Browser hand requires python3 (non-optional) + chromium (optional).
+        // requirements_met only reflects non-optional requirements.
+        // degraded = active + any requirement (including optional) unsatisfied.
+        let instance = reg.activate("browser", HashMap::new()).unwrap();
+        let r = reg.readiness("browser").unwrap();
+        assert!(r.active);
+
+        // Check individual requirements
+        let reqs = reg.check_requirements("browser").unwrap();
+        let python_met = reqs.iter().any(|(req, ok)| req.key == "python3" && *ok);
+        let chromium_met = reqs.iter().any(|(req, ok)| req.key == "chromium" && *ok);
+
+        // requirements_met only gates on non-optional (python3)
+        assert_eq!(r.requirements_met, python_met);
+
+        // degraded = active + any requirement unsatisfied
+        if python_met && chromium_met {
+            assert!(!r.degraded); // all met, not degraded
+        } else {
+            assert!(r.degraded); // something is missing, degraded
+        }
+
+        reg.deactivate(instance.instance_id).unwrap();
+    }
+
+    #[test]
+    fn readiness_paused_hand_not_active() {
+        let reg = HandRegistry::new();
+        reg.load_bundled();
+
+        let instance = reg.activate("lead", HashMap::new()).unwrap();
+        reg.pause(instance.instance_id).unwrap();
+
+        let r = reg.readiness("lead").unwrap();
+        assert!(!r.active); // Paused is not Active
+        assert!(!r.degraded);
+
+        reg.deactivate(instance.instance_id).unwrap();
+    }
+
+    #[test]
+    fn optional_field_defaults_false() {
+        let req = HandRequirement {
+            key: "test".to_string(),
+            label: "test".to_string(),
+            requirement_type: RequirementType::Binary,
+            check_value: "test".to_string(),
+            description: None,
+            optional: false,
+            install: None,
+        };
+        assert!(!req.optional);
     }
 }

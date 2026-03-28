@@ -60,23 +60,59 @@ struct GeminiRequest {
 struct GeminiContent {
     #[serde(skip_serializing_if = "Option::is_none")]
     role: Option<String>,
+    #[serde(default)]
     parts: Vec<GeminiPart>,
 }
 
 /// A part within a content entry.
+///
+/// Gemini 2.5+/3.x thinking models include `thoughtSignature` at the **part
+/// level** (sibling of `functionCall`/`text`, not nested inside them).  When
+/// echoing model turns back in the conversation history, the signature must be
+/// preserved on every part that originally carried one — otherwise the API
+/// returns `INVALID_ARGUMENT: Function call is missing a thought_signature`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 enum GeminiPart {
+    /// Thinking/reasoning part emitted by Gemini 2.5+ thinking models.
+    /// JSON shape: `{ "text": "...", "thought": true }`.
+    /// Must be listed **before** `Text` so `serde(untagged)` matches it first.
+    Thought {
+        text: String,
+        thought: bool,
+        #[serde(
+            rename = "thoughtSignature",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        thought_signature: Option<String>,
+    },
+    /// Text part, optionally carrying a thought signature.
     Text {
         text: String,
+        /// Part-level thought signature (Gemini 2.5+/3.x thinking models).
+        #[serde(
+            rename = "thoughtSignature",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        thought_signature: Option<String>,
     },
     InlineData {
         #[serde(rename = "inlineData")]
         inline_data: GeminiInlineData,
     },
+    /// Function call part with an optional part-level thought signature.
     FunctionCall {
         #[serde(rename = "functionCall")]
         function_call: GeminiFunctionCallData,
+        /// Part-level thought signature (Gemini 2.5+/3.x thinking models).
+        #[serde(
+            rename = "thoughtSignature",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        thought_signature: Option<String>,
     },
     FunctionResponse {
         #[serde(rename = "functionResponse")]
@@ -95,9 +131,6 @@ struct GeminiInlineData {
 struct GeminiFunctionCallData {
     name: String,
     args: serde_json::Value,
-    /// Gemini 2.5+ thinking models return this on functionCall parts.
-    #[serde(rename = "thoughtSignature", default, skip_serializing_if = "Option::is_none")]
-    thought_signature: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -187,7 +220,8 @@ fn parse_gemini_error(body: &str) -> String {
     }
     // Google sometimes returns bare JSON arrays or HTML error pages
     if body.starts_with('<') {
-        return "Google API returned an HTML error page — check your API key and model name".to_string();
+        return "Google API returned an HTML error page — check your API key and model name"
+            .to_string();
     }
     body.to_string()
 }
@@ -216,13 +250,30 @@ fn convert_messages(
         };
 
         let parts = match &msg.content {
-            MessageContent::Text(text) => vec![GeminiPart::Text { text: text.clone() }],
+            MessageContent::Text(text) => vec![GeminiPart::Text {
+                text: text.clone(),
+                thought_signature: None,
+            }],
             MessageContent::Blocks(blocks) => {
                 let mut parts = Vec::new();
                 for block in blocks {
                     match block {
-                        ContentBlock::Text { text } => {
-                            parts.push(GeminiPart::Text { text: text.clone() });
+                        ContentBlock::Text {
+                            text,
+                            provider_metadata,
+                        } => {
+                            // Echo back thought_signature from provider_metadata
+                            // if present — required by Gemini 3.x thinking models
+                            // on ALL parts, including text parts.
+                            let thought_signature = provider_metadata
+                                .as_ref()
+                                .and_then(|m| m.get("thought_signature"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            parts.push(GeminiPart::Text {
+                                text: text.clone(),
+                                thought_signature,
+                            });
                         }
                         ContentBlock::ToolUse {
                             name,
@@ -231,7 +282,9 @@ fn convert_messages(
                             ..
                         } => {
                             // Echo back thought_signature from provider_metadata
-                            // if present — required by Gemini 2.5+ thinking models.
+                            // if present — required by Gemini 2.5+/3.x thinking models.
+                            // The signature lives at the part level (sibling of
+                            // functionCall), not inside the functionCall object.
                             let thought_signature = provider_metadata
                                 .as_ref()
                                 .and_then(|m| m.get("thought_signature"))
@@ -241,8 +294,8 @@ fn convert_messages(
                                 function_call: GeminiFunctionCallData {
                                     name: name.clone(),
                                     args: input.clone(),
-                                    thought_signature,
                                 },
+                                thought_signature,
                             });
                         }
                         ContentBlock::Image { media_type, data } => {
@@ -284,7 +337,117 @@ fn convert_messages(
         }
     }
 
+    // Sanitize for Gemini's strict turn-ordering rules:
+    // - A model turn with functionCall MUST be followed by a user turn with functionResponse
+    // - No consecutive same-role turns
+    let contents = sanitize_gemini_turns(contents);
+
     (contents, system_instruction)
+}
+
+/// Enforce Gemini's strict turn-ordering constraints.
+///
+/// Gemini requires: functionCall (model) → functionResponse (user) → model.
+/// After message trimming, this ordering can break. This function:
+/// 1. Merges consecutive same-role turns
+/// 2. Drops orphaned functionCall parts (no following functionResponse)
+/// 3. Drops orphaned functionResponse parts (no preceding functionCall)
+fn sanitize_gemini_turns(contents: Vec<GeminiContent>) -> Vec<GeminiContent> {
+    if contents.is_empty() {
+        return contents;
+    }
+
+    // Step 1: Merge consecutive same-role turns
+    let mut merged: Vec<GeminiContent> = Vec::with_capacity(contents.len());
+    for entry in contents {
+        if let Some(last) = merged.last_mut() {
+            if last.role == entry.role {
+                last.parts.extend(entry.parts);
+                continue;
+            }
+        }
+        merged.push(entry);
+    }
+
+    // Step 2: Drop orphaned functionCall parts from model turns.
+    // A model turn with functionCall must be followed by a user turn with functionResponse.
+    let len = merged.len();
+    for i in 0..len {
+        let is_model = merged[i].role.as_deref() == Some("model");
+        if !is_model {
+            continue;
+        }
+
+        let has_function_call = merged[i]
+            .parts
+            .iter()
+            .any(|p| matches!(p, GeminiPart::FunctionCall { .. }));
+        if !has_function_call {
+            continue;
+        }
+
+        // Check if next turn is a user turn with functionResponse
+        let next_has_response = i + 1 < len
+            && merged[i + 1].role.as_deref() == Some("user")
+            && merged[i + 1]
+                .parts
+                .iter()
+                .any(|p| matches!(p, GeminiPart::FunctionResponse { .. }));
+
+        if !next_has_response {
+            // Drop the functionCall parts from this model turn (keep text parts)
+            merged[i]
+                .parts
+                .retain(|p| !matches!(p, GeminiPart::FunctionCall { .. }));
+        }
+    }
+
+    // Step 3: Drop orphaned functionResponse parts from user turns.
+    // A user turn with functionResponse must be preceded by a model turn with functionCall.
+    for i in 0..merged.len() {
+        let is_user = merged[i].role.as_deref() == Some("user");
+        if !is_user {
+            continue;
+        }
+
+        let has_function_response = merged[i]
+            .parts
+            .iter()
+            .any(|p| matches!(p, GeminiPart::FunctionResponse { .. }));
+        if !has_function_response {
+            continue;
+        }
+
+        let prev_has_call = i > 0
+            && merged[i - 1].role.as_deref() == Some("model")
+            && merged[i - 1]
+                .parts
+                .iter()
+                .any(|p| matches!(p, GeminiPart::FunctionCall { .. }));
+
+        if !prev_has_call {
+            merged[i]
+                .parts
+                .retain(|p| !matches!(p, GeminiPart::FunctionResponse { .. }));
+        }
+    }
+
+    // Step 4: Remove turns that ended up empty after filtering
+    merged.retain(|c| !c.parts.is_empty());
+
+    // Step 5: Final merge pass (removing parts may have created new consecutive same-role)
+    let mut final_merged: Vec<GeminiContent> = Vec::with_capacity(merged.len());
+    for entry in merged {
+        if let Some(last) = final_merged.last_mut() {
+            if last.role == entry.role {
+                last.parts.extend(entry.parts);
+                continue;
+            }
+        }
+        final_merged.push(entry);
+    }
+
+    final_merged
 }
 
 /// Extract system prompt from messages or the explicit system field.
@@ -304,7 +467,10 @@ fn extract_system(messages: &[Message], system: &Option<String>) -> Option<Gemin
 
     Some(GeminiContent {
         role: None, // systemInstruction doesn't use a role
-        parts: vec![GeminiPart::Text { text }],
+        parts: vec![GeminiPart::Text {
+            text,
+            thought_signature: None,
+        }],
     })
 }
 
@@ -349,19 +515,34 @@ fn convert_response(resp: GeminiResponse) -> Result<CompletionResponse, LlmError
         Some(gemini_content) => {
             for part in gemini_content.parts {
                 match part {
-                    GeminiPart::Text { text } => {
+                    GeminiPart::Text {
+                        text,
+                        thought_signature,
+                    } => {
                         if !text.is_empty() {
-                            content.push(ContentBlock::Text { text });
+                            // Preserve thought_signature in provider_metadata so
+                            // it gets echoed back on the next request.  Gemini
+                            // 3.x thinking models include thoughtSignature on
+                            // ALL parts (text + functionCall).
+                            let provider_metadata = thought_signature
+                                .map(|sig| serde_json::json!({ "thought_signature": sig }));
+                            content.push(ContentBlock::Text {
+                                text,
+                                provider_metadata,
+                            });
                         }
                     }
-                    GeminiPart::FunctionCall { function_call } => {
+                    GeminiPart::FunctionCall {
+                        function_call,
+                        thought_signature,
+                    } => {
                         let id = format!("call_{}", uuid::Uuid::new_v4().simple());
                         // Preserve thought_signature in provider_metadata so it
-                        // gets echoed back on the next request (Gemini 2.5+ requirement).
-                        let provider_metadata =
-                            function_call.thought_signature.as_ref().map(|sig| {
-                                serde_json::json!({ "thought_signature": sig })
-                            });
+                        // gets echoed back on the next request (Gemini 2.5+/3.x).
+                        // The signature lives at the part level, not inside
+                        // functionCall.
+                        let provider_metadata = thought_signature
+                            .map(|sig| serde_json::json!({ "thought_signature": sig }));
                         content.push(ContentBlock::ToolUse {
                             id: id.clone(),
                             name: function_call.name.clone(),
@@ -374,6 +555,14 @@ fn convert_response(resp: GeminiResponse) -> Result<CompletionResponse, LlmError
                             input: function_call.args,
                         });
                     }
+                    GeminiPart::Thought { text, .. } => {
+                        // Gemini 2.5+ thinking parts — internal reasoning.
+                        // Store as Thinking content block so the UI can
+                        // optionally display it (like <think> blocks).
+                        if !text.is_empty() {
+                            content.push(ContentBlock::Thinking { thinking: text });
+                        }
+                    }
                     GeminiPart::InlineData { .. } | GeminiPart::FunctionResponse { .. } => {
                         // Shouldn't normally appear in responses, ignore
                     }
@@ -381,10 +570,7 @@ fn convert_response(resp: GeminiResponse) -> Result<CompletionResponse, LlmError
             }
         }
         None => {
-            let reason = candidate
-                .finish_reason
-                .as_deref()
-                .unwrap_or("unknown");
+            let reason = candidate.finish_reason.as_deref().unwrap_or("unknown");
             warn!(finish_reason = %reason, "Gemini returned candidate with no content");
             return Err(LlmError::Parse(format!(
                 "Gemini returned empty response (finish_reason: {reason})"
@@ -441,7 +627,9 @@ impl LlmDriver for GeminiDriver {
         for attempt in 0..=max_retries {
             let url = format!(
                 "{}/v1beta/models/{}:generateContent?key={}",
-                self.base_url, request.model, self.api_key.as_str()
+                self.base_url,
+                request.model,
+                self.api_key.as_str()
             );
             debug!(url = %url, attempt, "Sending Gemini API request");
 
@@ -525,7 +713,9 @@ impl LlmDriver for GeminiDriver {
         for attempt in 0..=max_retries {
             let url = format!(
                 "{}/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
-                self.base_url, request.model, self.api_key.as_str()
+                self.base_url,
+                request.model,
+                self.api_key.as_str()
             );
             debug!(url = %url, attempt, "Sending Gemini streaming request");
 
@@ -574,29 +764,54 @@ impl LlmDriver for GeminiDriver {
                 return Err(LlmError::Api { status, message });
             }
 
-            // Parse SSE stream
+            // Parse SSE stream — process line-by-line like the OpenAI driver.
+            //
+            // Gemini's `streamGenerateContent?alt=sse` endpoint sends
+            // standard SSE: each event is a `data: {...}` line followed by
+            // a blank line.  The previous implementation looked for `\n\n`
+            // as the event delimiter, but many HTTP responses use `\r\n`
+            // line endings, so the actual delimiter is `\r\n\r\n` which
+            // `find("\n\n")` never matches — causing the entire stream to
+            // be silently buffered without extracting any events (zero
+            // TextDelta emissions → empty response → infinite retry loop).
+            //
+            // Fix: process the buffer one line at a time (splitting on
+            // `\n` and stripping trailing `\r`).  A `data:` line is
+            // parsed immediately.  Empty/blank lines are simply skipped.
             let mut buffer = String::new();
             let mut text_content = String::new();
+            // Thought signature for accumulated text content (last one wins)
+            let mut text_thought_sig: Option<String> = None;
             // Track function calls: (name, args_json, thought_signature)
             let mut fn_calls: Vec<(String, serde_json::Value, Option<String>)> = Vec::new();
             let mut finish_reason: Option<String> = None;
             let mut usage = TokenUsage::default();
+            let mut chunk_count: u32 = 0;
+            let mut sse_line_count: u32 = 0;
 
             let mut byte_stream = resp.bytes_stream();
             while let Some(chunk_result) = byte_stream.next().await {
                 let chunk = chunk_result.map_err(|e| LlmError::Http(e.to_string()))?;
+                chunk_count += 1;
                 buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-                // Process complete SSE events (delimited by \n\n or \r\n\r\n)
-                while let Some(pos) = buffer.find("\n\n") {
-                    let event_text = buffer[..pos].to_string();
-                    buffer = buffer[pos + 2..].to_string();
+                // Process complete lines (handle both \r\n and \n endings)
+                while let Some(pos) = buffer.find('\n') {
+                    let line = buffer[..pos].trim_end().to_string();
+                    buffer = buffer[pos + 1..].to_string();
 
-                    // Extract the data line (handle both "data: " and "data:" formats)
-                    let data = event_text
-                        .lines()
-                        .find_map(|line| line.strip_prefix("data:").map(|d| d.trim_start()))
-                        .unwrap_or("");
+                    // Skip empty lines and SSE comments
+                    if line.is_empty() || line.starts_with(':') {
+                        continue;
+                    }
+
+                    sse_line_count += 1;
+
+                    // Extract the data payload (handle both "data: " and "data:" formats)
+                    let data = match line.strip_prefix("data:") {
+                        Some(d) => d.trim_start(),
+                        None => continue,
+                    };
 
                     if data.is_empty() {
                         continue;
@@ -604,7 +819,14 @@ impl LlmDriver for GeminiDriver {
 
                     let json: GeminiResponse = match serde_json::from_str(data) {
                         Ok(v) => v,
-                        Err(_) => continue,
+                        Err(e) => {
+                            debug!(
+                                error = %e,
+                                data_preview = &data[..data.len().min(200)],
+                                "Failed to parse Gemini SSE data line"
+                            );
+                            continue;
+                        }
                     };
 
                     // Extract usage from each chunk (last one wins)
@@ -621,15 +843,26 @@ impl LlmDriver for GeminiDriver {
                         if let Some(ref content) = candidate.content {
                             for part in &content.parts {
                                 match part {
-                                    GeminiPart::Text { text } => {
+                                    GeminiPart::Text {
+                                        text,
+                                        thought_signature,
+                                    } => {
                                         if !text.is_empty() {
                                             text_content.push_str(text);
                                             let _ = tx
                                                 .send(StreamEvent::TextDelta { text: text.clone() })
                                                 .await;
                                         }
+                                        // Capture thought signature for text parts
+                                        // (last one wins across streamed chunks).
+                                        if thought_signature.is_some() {
+                                            text_thought_sig = thought_signature.clone();
+                                        }
                                     }
-                                    GeminiPart::FunctionCall { function_call } => {
+                                    GeminiPart::FunctionCall {
+                                        function_call,
+                                        thought_signature,
+                                    } => {
                                         let id = format!("call_{}", uuid::Uuid::new_v4().simple());
                                         let _ = tx
                                             .send(StreamEvent::ToolUseStart {
@@ -652,8 +885,20 @@ impl LlmDriver for GeminiDriver {
                                         fn_calls.push((
                                             function_call.name.clone(),
                                             function_call.args.clone(),
-                                            function_call.thought_signature.clone(),
+                                            thought_signature.clone(),
                                         ));
+                                    }
+                                    GeminiPart::Thought { ref text, .. } => {
+                                        // Gemini 2.5+ thinking chunk — emit as
+                                        // thinking delta so UIs can optionally
+                                        // show it; do NOT mix into text_content.
+                                        if !text.is_empty() {
+                                            let _ = tx
+                                                .send(StreamEvent::ThinkingDelta {
+                                                    text: text.clone(),
+                                                })
+                                                .await;
+                                        }
                                     }
                                     GeminiPart::InlineData { .. }
                                     | GeminiPart::FunctionResponse { .. } => {}
@@ -664,12 +909,132 @@ impl LlmDriver for GeminiDriver {
                 }
             }
 
+            // Process any remaining data left in the buffer after the stream
+            // ends (e.g. final chunk not terminated by a newline).
+            let remaining = buffer.trim();
+            if !remaining.is_empty() {
+                if let Some(data) = remaining.strip_prefix("data:") {
+                    let data = data.trim();
+                    if !data.is_empty() {
+                        if let Ok(json) = serde_json::from_str::<GeminiResponse>(data) {
+                            if let Some(ref u) = json.usage_metadata {
+                                usage.input_tokens = u.prompt_token_count;
+                                usage.output_tokens = u.candidates_token_count;
+                            }
+                            for candidate in &json.candidates {
+                                if let Some(fr) = &candidate.finish_reason {
+                                    finish_reason = Some(fr.clone());
+                                }
+                                if let Some(ref content) = candidate.content {
+                                    for part in &content.parts {
+                                        match part {
+                                            GeminiPart::Text {
+                                                text,
+                                                thought_signature,
+                                            } => {
+                                                if !text.is_empty() {
+                                                    text_content.push_str(text);
+                                                    let _ = tx
+                                                        .send(StreamEvent::TextDelta {
+                                                            text: text.clone(),
+                                                        })
+                                                        .await;
+                                                }
+                                                if thought_signature.is_some() {
+                                                    text_thought_sig = thought_signature.clone();
+                                                }
+                                            }
+                                            GeminiPart::FunctionCall {
+                                                function_call,
+                                                thought_signature,
+                                            } => {
+                                                let id = format!(
+                                                    "call_{}",
+                                                    uuid::Uuid::new_v4().simple()
+                                                );
+                                                let _ = tx
+                                                    .send(StreamEvent::ToolUseStart {
+                                                        id: id.clone(),
+                                                        name: function_call.name.clone(),
+                                                    })
+                                                    .await;
+                                                let args_str =
+                                                    serde_json::to_string(&function_call.args)
+                                                        .unwrap_or_default();
+                                                let _ = tx
+                                                    .send(StreamEvent::ToolInputDelta {
+                                                        text: args_str,
+                                                    })
+                                                    .await;
+                                                let _ = tx
+                                                    .send(StreamEvent::ToolUseEnd {
+                                                        id,
+                                                        name: function_call.name.clone(),
+                                                        input: function_call.args.clone(),
+                                                    })
+                                                    .await;
+                                                fn_calls.push((
+                                                    function_call.name.clone(),
+                                                    function_call.args.clone(),
+                                                    thought_signature.clone(),
+                                                ));
+                                            }
+                                            GeminiPart::Thought { ref text, .. } => {
+                                                if !text.is_empty() {
+                                                    let _ = tx
+                                                        .send(StreamEvent::ThinkingDelta {
+                                                            text: text.clone(),
+                                                        })
+                                                        .await;
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Log stream summary for diagnostics (mirrors OpenAI driver)
+            let is_empty_stream = text_content.is_empty()
+                && fn_calls.is_empty()
+                && usage.input_tokens == 0
+                && usage.output_tokens == 0;
+            if is_empty_stream {
+                warn!(
+                    chunks = chunk_count,
+                    sse_lines = sse_line_count,
+                    finish = ?finish_reason,
+                    buffer_remaining = buffer.len(),
+                    "Gemini SSE stream returned empty: 0 content, 0 tokens — likely a silently failed request"
+                );
+            } else {
+                debug!(
+                    chunks = chunk_count,
+                    sse_lines = sse_line_count,
+                    text_len = text_content.len(),
+                    tool_count = fn_calls.len(),
+                    finish = ?finish_reason,
+                    input_tokens = usage.input_tokens,
+                    output_tokens = usage.output_tokens,
+                    "Gemini SSE stream completed"
+                );
+            }
+
             // Build final response
             let mut content = Vec::new();
             let mut tool_calls = Vec::new();
 
             if !text_content.is_empty() {
-                content.push(ContentBlock::Text { text: text_content });
+                let provider_metadata =
+                    text_thought_sig.map(|sig| serde_json::json!({ "thought_signature": sig }));
+                content.push(ContentBlock::Text {
+                    text: text_content,
+                    provider_metadata,
+                });
             }
 
             for (name, args, thought_sig) in fn_calls {
@@ -744,12 +1109,14 @@ mod tests {
                 role: Some("user".to_string()),
                 parts: vec![GeminiPart::Text {
                     text: "Hello".to_string(),
+                    thought_signature: None,
                 }],
             }],
             system_instruction: Some(GeminiContent {
                 role: None,
                 parts: vec![GeminiPart::Text {
                     text: "You are helpful.".to_string(),
+                    thought_signature: None,
                 }],
             }),
             tools: vec![],
@@ -843,7 +1210,7 @@ mod tests {
         let sys = sys_instruction.unwrap();
         assert!(sys.role.is_none());
         match &sys.parts[0] {
-            GeminiPart::Text { text } => assert_eq!(text, "Be helpful."),
+            GeminiPart::Text { text, .. } => assert_eq!(text, "Be helpful."),
             _ => panic!("Expected text part"),
         }
     }
@@ -908,6 +1275,7 @@ mod tests {
                     role: Some("model".to_string()),
                     parts: vec![GeminiPart::Text {
                         text: "Hello!".to_string(),
+                        thought_signature: None,
                     }],
                 }),
                 finish_reason: Some("STOP".to_string()),
@@ -946,6 +1314,7 @@ mod tests {
                     role: Some("model".to_string()),
                     parts: vec![GeminiPart::Text {
                         text: "Truncated...".to_string(),
+                        thought_signature: None,
                     }],
                 }),
                 finish_reason: Some("MAX_TOKENS".to_string()),
@@ -976,7 +1345,7 @@ mod tests {
         let result = extract_system(&messages, &system);
         assert!(result.is_some());
         match &result.unwrap().parts[0] {
-            GeminiPart::Text { text } => assert_eq!(text, "Be concise."),
+            GeminiPart::Text { text, .. } => assert_eq!(text, "Be concise."),
             _ => panic!("Expected text"),
         }
     }
@@ -993,7 +1362,7 @@ mod tests {
         let result = extract_system(&messages, &None);
         assert!(result.is_some());
         match &result.unwrap().parts[0] {
-            GeminiPart::Text { text } => assert_eq!(text, "System prompt here."),
+            GeminiPart::Text { text, .. } => assert_eq!(text, "System prompt here."),
             _ => panic!("Expected text"),
         }
     }
@@ -1016,11 +1385,15 @@ mod tests {
         assert_eq!(json["maxOutputTokens"], 2048);
     }
 
-    // --- Issue #501: thought_signature round-trip tests ---
+    // --- Issue #501/#506: thought_signature round-trip tests ---
+    //
+    // Gemini 2.5+/3.x thinking models include `thoughtSignature` at the PART
+    // level (sibling of `functionCall`/`text`).  All signatures must be echoed
+    // back exactly as received in follow-up requests.
 
     #[test]
-    fn test_thought_signature_captured_from_response() {
-        // Gemini 2.5+ thinking models return thoughtSignature on functionCall parts.
+    fn test_thought_signature_captured_from_function_call_response() {
+        // Gemini 3.x: thoughtSignature at the part level (sibling of functionCall).
         let json = serde_json::json!({
             "candidates": [{
                 "content": {
@@ -1028,9 +1401,9 @@ mod tests {
                     "parts": [{
                         "functionCall": {
                             "name": "web_search",
-                            "args": {"query": "rust lang"},
-                            "thoughtSignature": "abc123signature"
-                        }
+                            "args": {"query": "rust lang"}
+                        },
+                        "thoughtSignature": "abc123signature"
                     }]
                 },
                 "finishReason": "STOP"
@@ -1053,7 +1426,9 @@ mod tests {
             ContentBlock::ToolUse {
                 provider_metadata, ..
             } => {
-                let meta = provider_metadata.as_ref().expect("provider_metadata should be set");
+                let meta = provider_metadata
+                    .as_ref()
+                    .expect("provider_metadata should be set");
                 assert_eq!(meta["thought_signature"], "abc123signature");
             }
             _ => panic!("Expected ToolUse content block"),
@@ -1061,9 +1436,47 @@ mod tests {
     }
 
     #[test]
-    fn test_thought_signature_echoed_in_request() {
+    fn test_thought_signature_captured_from_text_response() {
+        // Gemini 3.x: thoughtSignature on text parts too.
+        let json = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{
+                        "text": "Let me think about this...",
+                        "thoughtSignature": "text_sig_456"
+                    }]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 8
+            }
+        });
+
+        let resp: GeminiResponse = serde_json::from_value(json).unwrap();
+        let completion = convert_response(resp).unwrap();
+
+        match &completion.content[0] {
+            ContentBlock::Text {
+                text,
+                provider_metadata,
+            } => {
+                assert_eq!(text, "Let me think about this...");
+                let meta = provider_metadata
+                    .as_ref()
+                    .expect("provider_metadata should be set for text with thoughtSignature");
+                assert_eq!(meta["thought_signature"], "text_sig_456");
+            }
+            _ => panic!("Expected Text content block"),
+        }
+    }
+
+    #[test]
+    fn test_thought_signature_echoed_in_request_function_call() {
         // When a ToolUse block carries provider_metadata with thought_signature,
-        // convert_messages should echo it back in the GeminiFunctionCallData.
+        // convert_messages should echo it back at the part level.
         let messages = vec![
             Message::user("Search for rust"),
             Message {
@@ -1090,20 +1503,54 @@ mod tests {
 
         let (contents, _) = convert_messages(&messages, &None);
 
-        // The assistant's turn (index 1) should have a FunctionCall with the thought_signature
+        // The assistant's turn (index 1) should have a FunctionCall with the
+        // thought_signature at the part level.
         let assistant_turn = &contents[1];
         assert_eq!(assistant_turn.role.as_deref(), Some("model"));
 
         let fc_part = &assistant_turn.parts[0];
         match fc_part {
-            GeminiPart::FunctionCall { function_call } => {
+            GeminiPart::FunctionCall {
+                function_call,
+                thought_signature,
+            } => {
                 assert_eq!(function_call.name, "web_search");
-                assert_eq!(
-                    function_call.thought_signature.as_deref(),
-                    Some("sig_xyz789")
-                );
+                assert_eq!(thought_signature.as_deref(), Some("sig_xyz789"));
             }
             _ => panic!("Expected FunctionCall part"),
+        }
+    }
+
+    #[test]
+    fn test_thought_signature_echoed_in_request_text() {
+        // When a Text block carries provider_metadata with thought_signature,
+        // convert_messages should echo it back on the text part.
+        let messages = vec![
+            Message::user("Hello"),
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![ContentBlock::Text {
+                    text: "Let me think...".to_string(),
+                    provider_metadata: Some(serde_json::json!({
+                        "thought_signature": "text_sig_abc"
+                    })),
+                }]),
+            },
+        ];
+
+        let (contents, _) = convert_messages(&messages, &None);
+        let assistant_turn = &contents[1];
+        assert_eq!(assistant_turn.role.as_deref(), Some("model"));
+
+        match &assistant_turn.parts[0] {
+            GeminiPart::Text {
+                text,
+                thought_signature,
+            } => {
+                assert_eq!(text, "Let me think...");
+                assert_eq!(thought_signature.as_deref(), Some("text_sig_abc"));
+            }
+            _ => panic!("Expected Text part"),
         }
     }
 
@@ -1148,7 +1595,7 @@ mod tests {
     #[test]
     fn test_thought_signature_not_echoed_without_metadata() {
         // ToolUse blocks without provider_metadata should produce
-        // GeminiFunctionCallData with thought_signature: None
+        // GeminiPart::FunctionCall with thought_signature: None
         let messages = vec![
             Message::user("Hello"),
             Message {
@@ -1160,15 +1607,26 @@ mod tests {
                     provider_metadata: None,
                 }]),
             },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_456".to_string(),
+                    tool_name: "read_file".to_string(),
+                    content: "file contents".to_string(),
+                    is_error: false,
+                }]),
+            },
         ];
 
         let (contents, _) = convert_messages(&messages, &None);
         let assistant_turn = &contents[1];
 
         match &assistant_turn.parts[0] {
-            GeminiPart::FunctionCall { function_call } => {
+            GeminiPart::FunctionCall {
+                thought_signature, ..
+            } => {
                 assert!(
-                    function_call.thought_signature.is_none(),
+                    thought_signature.is_none(),
                     "thought_signature should be None when no provider_metadata"
                 );
             }
@@ -1178,28 +1636,31 @@ mod tests {
 
     #[test]
     fn test_thought_signature_serialization_round_trip() {
-        // Verify the GeminiFunctionCallData serializes thoughtSignature correctly
-        let data = GeminiFunctionCallData {
-            name: "web_search".to_string(),
-            args: serde_json::json!({"query": "test"}),
+        // Verify the part-level thoughtSignature serializes correctly
+        let part = GeminiPart::FunctionCall {
+            function_call: GeminiFunctionCallData {
+                name: "web_search".to_string(),
+                args: serde_json::json!({"query": "test"}),
+            },
             thought_signature: Some("my_sig_abc".to_string()),
         };
-
-        let part = GeminiPart::FunctionCall {
-            function_call: data,
-        };
         let json = serde_json::to_value(&part).unwrap();
-        assert_eq!(json["functionCall"]["thoughtSignature"], "my_sig_abc");
+        // thoughtSignature should be at the part level (sibling of functionCall),
+        // NOT nested inside functionCall.
+        assert_eq!(json["thoughtSignature"], "my_sig_abc");
         assert_eq!(json["functionCall"]["name"], "web_search");
+        assert!(
+            json["functionCall"].get("thoughtSignature").is_none(),
+            "thoughtSignature must NOT be nested inside functionCall"
+        );
 
         // Verify it can round-trip through deserialization
         let deserialized: GeminiPart = serde_json::from_value(json).unwrap();
         match deserialized {
-            GeminiPart::FunctionCall { function_call } => {
-                assert_eq!(
-                    function_call.thought_signature.as_deref(),
-                    Some("my_sig_abc")
-                );
+            GeminiPart::FunctionCall {
+                thought_signature, ..
+            } => {
+                assert_eq!(thought_signature.as_deref(), Some("my_sig_abc"));
             }
             _ => panic!("Expected FunctionCall"),
         }
@@ -1208,25 +1669,63 @@ mod tests {
     #[test]
     fn test_thought_signature_omitted_when_none() {
         // When thought_signature is None, the JSON should not contain the field
-        let data = GeminiFunctionCallData {
-            name: "read_file".to_string(),
-            args: serde_json::json!({}),
-            thought_signature: None,
-        };
-
         let part = GeminiPart::FunctionCall {
-            function_call: data,
+            function_call: GeminiFunctionCallData {
+                name: "read_file".to_string(),
+                args: serde_json::json!({}),
+            },
+            thought_signature: None,
         };
         let json = serde_json::to_value(&part).unwrap();
         assert!(
-            json["functionCall"].get("thoughtSignature").is_none(),
+            json.get("thoughtSignature").is_none(),
             "thoughtSignature should be omitted when None"
         );
     }
 
     #[test]
+    fn test_thought_signature_omitted_on_text_when_none() {
+        let part = GeminiPart::Text {
+            text: "Hello".to_string(),
+            thought_signature: None,
+        };
+        let json = serde_json::to_value(&part).unwrap();
+        assert!(
+            json.get("thoughtSignature").is_none(),
+            "thoughtSignature should be omitted on text parts when None"
+        );
+        assert_eq!(json["text"], "Hello");
+    }
+
+    #[test]
+    fn test_text_thought_signature_round_trip() {
+        // Verify text part thought signature serializes at part level
+        let part = GeminiPart::Text {
+            text: "Thinking...".to_string(),
+            thought_signature: Some("text_sig_xyz".to_string()),
+        };
+        let json = serde_json::to_value(&part).unwrap();
+        assert_eq!(json["text"], "Thinking...");
+        assert_eq!(json["thoughtSignature"], "text_sig_xyz");
+
+        // Round-trip
+        let deserialized: GeminiPart = serde_json::from_value(json).unwrap();
+        match deserialized {
+            GeminiPart::Text {
+                text,
+                thought_signature,
+            } => {
+                assert_eq!(text, "Thinking...");
+                assert_eq!(thought_signature.as_deref(), Some("text_sig_xyz"));
+            }
+            _ => panic!("Expected Text"),
+        }
+    }
+
+    #[test]
     fn test_multiple_function_calls_with_mixed_signatures() {
-        // Response with multiple function calls, some with signatures, some without
+        // Response with multiple function calls, some with signatures, some without.
+        // Gemini 3.x: thoughtSignature at part level.
         let json = serde_json::json!({
             "candidates": [{
                 "content": {
@@ -1235,9 +1734,9 @@ mod tests {
                         {
                             "functionCall": {
                                 "name": "web_search",
-                                "args": {"query": "rust"},
-                                "thoughtSignature": "sig_1"
-                            }
+                                "args": {"query": "rust"}
+                            },
+                            "thoughtSignature": "sig_1"
                         },
                         {
                             "functionCall": {
@@ -1285,5 +1784,357 @@ mod tests {
             }
             _ => panic!("Expected ToolUse"),
         }
+    }
+
+    #[test]
+    fn test_gemini_3x_text_and_function_call_both_have_signatures() {
+        // Gemini 3.x thinking models include thoughtSignature on ALL parts:
+        // text parts AND functionCall parts.  Both must round-trip.
+        let json = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {
+                            "text": "I'll search for that.",
+                            "thoughtSignature": "text_sig_aaa"
+                        },
+                        {
+                            "functionCall": {
+                                "name": "web_search",
+                                "args": {"query": "rust"}
+                            },
+                            "thoughtSignature": "fc_sig_bbb"
+                        }
+                    ]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 20,
+                "candidatesTokenCount": 15
+            }
+        });
+
+        let resp: GeminiResponse = serde_json::from_value(json).unwrap();
+        let completion = convert_response(resp).unwrap();
+
+        // Text part should have its signature
+        match &completion.content[0] {
+            ContentBlock::Text {
+                text,
+                provider_metadata,
+            } => {
+                assert_eq!(text, "I'll search for that.");
+                let meta = provider_metadata.as_ref().unwrap();
+                assert_eq!(meta["thought_signature"], "text_sig_aaa");
+            }
+            _ => panic!("Expected Text"),
+        }
+
+        // Function call part should have its signature
+        match &completion.content[1] {
+            ContentBlock::ToolUse {
+                name,
+                provider_metadata,
+                ..
+            } => {
+                assert_eq!(name, "web_search");
+                let meta = provider_metadata.as_ref().unwrap();
+                assert_eq!(meta["thought_signature"], "fc_sig_bbb");
+            }
+            _ => panic!("Expected ToolUse"),
+        }
+
+        // Extract the generated tool_use_id for the ToolResult
+        let tool_use_id = match &completion.content[1] {
+            ContentBlock::ToolUse { id, .. } => id.clone(),
+            _ => panic!("Expected ToolUse"),
+        };
+
+        // Now convert back to Gemini format and verify signatures are echoed
+        let messages = vec![
+            Message::user("Search for rust"),
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(completion.content),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id,
+                    tool_name: "web_search".to_string(),
+                    content: "search results".to_string(),
+                    is_error: false,
+                }]),
+            },
+        ];
+        let (contents, _) = convert_messages(&messages, &None);
+        let model_turn = &contents[1];
+
+        // Verify text part echoes back its signature
+        match &model_turn.parts[0] {
+            GeminiPart::Text {
+                thought_signature, ..
+            } => {
+                assert_eq!(
+                    thought_signature.as_deref(),
+                    Some("text_sig_aaa"),
+                    "Text part must echo back its thoughtSignature"
+                );
+            }
+            _ => panic!("Expected Text part"),
+        }
+
+        // Verify function call part echoes back its signature
+        match &model_turn.parts[1] {
+            GeminiPart::FunctionCall {
+                thought_signature, ..
+            } => {
+                assert_eq!(
+                    thought_signature.as_deref(),
+                    Some("fc_sig_bbb"),
+                    "FunctionCall part must echo back its thoughtSignature"
+                );
+            }
+            _ => panic!("Expected FunctionCall part"),
+        }
+
+        // Verify the serialized JSON has signatures at the part level
+        let serialized = serde_json::to_value(&model_turn.parts[0]).unwrap();
+        assert_eq!(serialized["thoughtSignature"], "text_sig_aaa");
+        let serialized = serde_json::to_value(&model_turn.parts[1]).unwrap();
+        assert_eq!(serialized["thoughtSignature"], "fc_sig_bbb");
+        assert!(
+            serialized["functionCall"].get("thoughtSignature").is_none(),
+            "thoughtSignature must be at part level, NOT inside functionCall"
+        );
+    }
+
+    #[test]
+    fn test_thought_part_deserialization() {
+        // Gemini 2.5+ thinking models emit { "text": "...", "thought": true }
+        let json = r#"{"text": "Let me think about this...", "thought": true}"#;
+        let part: GeminiPart = serde_json::from_str(json).unwrap();
+        match part {
+            GeminiPart::Thought { text, thought, .. } => {
+                assert_eq!(text, "Let me think about this...");
+                assert!(thought);
+            }
+            _ => panic!("Expected Thought variant, got {:?}", part),
+        }
+    }
+
+    #[test]
+    fn test_thought_part_with_signature() {
+        let json = r#"{"text": "reasoning...", "thought": true, "thoughtSignature": "sig_abc123"}"#;
+        let part: GeminiPart = serde_json::from_str(json).unwrap();
+        match part {
+            GeminiPart::Thought {
+                text,
+                thought,
+                thought_signature,
+            } => {
+                assert_eq!(text, "reasoning...");
+                assert!(thought);
+                assert_eq!(thought_signature.as_deref(), Some("sig_abc123"));
+            }
+            _ => panic!("Expected Thought variant"),
+        }
+    }
+
+    #[test]
+    fn test_text_part_still_works_without_thought() {
+        // Regular text parts (no `thought` field) must still deserialize as Text
+        let json = r#"{"text": "Hello world"}"#;
+        let part: GeminiPart = serde_json::from_str(json).unwrap();
+        match part {
+            GeminiPart::Text { text, .. } => assert_eq!(text, "Hello world"),
+            // Thought variant with thought=false would also be acceptable
+            GeminiPart::Thought { text, thought, .. } => {
+                assert_eq!(text, "Hello world");
+                assert!(!thought);
+            }
+            _ => panic!("Expected Text or Thought variant"),
+        }
+    }
+
+    #[test]
+    fn test_thought_part_in_response_produces_thinking_block() {
+        let resp = GeminiResponse {
+            candidates: vec![GeminiCandidate {
+                content: Some(GeminiContent {
+                    role: Some("model".to_string()),
+                    parts: vec![
+                        GeminiPart::Thought {
+                            text: "Let me reason...".to_string(),
+                            thought: true,
+                            thought_signature: None,
+                        },
+                        GeminiPart::Text {
+                            text: "Here is my answer.".to_string(),
+                            thought_signature: None,
+                        },
+                    ],
+                }),
+                finish_reason: Some("STOP".to_string()),
+            }],
+            usage_metadata: Some(GeminiUsageMetadata {
+                prompt_token_count: 10,
+                candidates_token_count: 20,
+            }),
+        };
+        let completion = convert_response(resp).unwrap();
+        // Should have a Thinking block and a Text block
+        assert_eq!(completion.content.len(), 2);
+        match &completion.content[0] {
+            ContentBlock::Thinking { thinking } => {
+                assert_eq!(thinking, "Let me reason...");
+            }
+            _ => panic!("Expected Thinking block, got {:?}", completion.content[0]),
+        }
+        match &completion.content[1] {
+            ContentBlock::Text { text, .. } => {
+                assert_eq!(text, "Here is my answer.");
+            }
+            _ => panic!("Expected Text block"),
+        }
+    }
+
+    // ── sanitize_gemini_turns tests ─────────────────────────────────────
+
+    #[test]
+    fn test_sanitize_drops_orphaned_function_call() {
+        // A model turn with functionCall but no following functionResponse
+        // should have the functionCall stripped.
+        let contents = vec![
+            GeminiContent {
+                role: Some("user".to_string()),
+                parts: vec![GeminiPart::Text {
+                    text: "Hello".to_string(),
+                    thought_signature: None,
+                }],
+            },
+            GeminiContent {
+                role: Some("model".to_string()),
+                parts: vec![
+                    GeminiPart::Text {
+                        text: "I'll search.".to_string(),
+                        thought_signature: None,
+                    },
+                    GeminiPart::FunctionCall {
+                        function_call: GeminiFunctionCallData {
+                            name: "web_search".to_string(),
+                            args: serde_json::json!({"q": "rust"}),
+                        },
+                        thought_signature: None,
+                    },
+                ],
+            },
+        ];
+
+        let sanitized = sanitize_gemini_turns(contents);
+        assert_eq!(sanitized.len(), 2);
+        // functionCall should be stripped, text kept
+        assert_eq!(sanitized[1].parts.len(), 1);
+        assert!(matches!(&sanitized[1].parts[0], GeminiPart::Text { .. }));
+    }
+
+    #[test]
+    fn test_sanitize_keeps_valid_function_call_response_pair() {
+        let contents = vec![
+            GeminiContent {
+                role: Some("user".to_string()),
+                parts: vec![GeminiPart::Text {
+                    text: "Search".to_string(),
+                    thought_signature: None,
+                }],
+            },
+            GeminiContent {
+                role: Some("model".to_string()),
+                parts: vec![GeminiPart::FunctionCall {
+                    function_call: GeminiFunctionCallData {
+                        name: "web_search".to_string(),
+                        args: serde_json::json!({"q": "rust"}),
+                    },
+                    thought_signature: None,
+                }],
+            },
+            GeminiContent {
+                role: Some("user".to_string()),
+                parts: vec![GeminiPart::FunctionResponse {
+                    function_response: GeminiFunctionResponseData {
+                        name: "web_search".to_string(),
+                        response: serde_json::json!({"result": "Rust is great"}),
+                    },
+                }],
+            },
+        ];
+
+        let sanitized = sanitize_gemini_turns(contents);
+        assert_eq!(sanitized.len(), 3);
+        // functionCall should be preserved
+        assert!(matches!(
+            &sanitized[1].parts[0],
+            GeminiPart::FunctionCall { .. }
+        ));
+    }
+
+    #[test]
+    fn test_sanitize_drops_orphaned_function_response() {
+        // A user turn with functionResponse but no preceding functionCall
+        let contents = vec![
+            GeminiContent {
+                role: Some("user".to_string()),
+                parts: vec![GeminiPart::FunctionResponse {
+                    function_response: GeminiFunctionResponseData {
+                        name: "web_search".to_string(),
+                        response: serde_json::json!({"result": "data"}),
+                    },
+                }],
+            },
+            GeminiContent {
+                role: Some("model".to_string()),
+                parts: vec![GeminiPart::Text {
+                    text: "Done.".to_string(),
+                    thought_signature: None,
+                }],
+            },
+        ];
+
+        let sanitized = sanitize_gemini_turns(contents);
+        // Orphaned functionResponse removed, empty user turn removed
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized[0].role.as_deref(), Some("model"));
+    }
+
+    #[test]
+    fn test_sanitize_merges_consecutive_same_role() {
+        let contents = vec![
+            GeminiContent {
+                role: Some("model".to_string()),
+                parts: vec![GeminiPart::Text {
+                    text: "First.".to_string(),
+                    thought_signature: None,
+                }],
+            },
+            GeminiContent {
+                role: Some("model".to_string()),
+                parts: vec![GeminiPart::Text {
+                    text: "Second.".to_string(),
+                    thought_signature: None,
+                }],
+            },
+        ];
+
+        let sanitized = sanitize_gemini_turns(contents);
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized[0].parts.len(), 2);
+    }
+
+    #[test]
+    fn test_sanitize_empty_input() {
+        let sanitized = sanitize_gemini_turns(vec![]);
+        assert!(sanitized.is_empty());
     }
 }
