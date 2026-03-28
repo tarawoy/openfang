@@ -51,6 +51,7 @@ use openfang_channels::gitter::GitterAdapter;
 use openfang_channels::gotify::GotifyAdapter;
 use openfang_channels::linkedin::LinkedInAdapter;
 use openfang_channels::mumble::MumbleAdapter;
+#[cfg(not(target_env = "musl"))]
 use openfang_channels::mqtt::MqttAdapter;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
@@ -1687,7 +1688,8 @@ pub async fn start_channel_bridge_with_config(
         }
     }
 
-    // MQTT
+    // MQTT (not supported on musl targets)
+    #[cfg(not(target_env = "musl"))]
     if let Some(ref mq_config) = config.mqtt {
         let username = read_token(&mq_config.username_env, "MQTT (username)");
         let password = read_token(&mq_config.password_env, "MQTT (password)");
