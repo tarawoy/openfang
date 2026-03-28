@@ -285,12 +285,6 @@ fn ordered_list_item(line: &str) -> Option<&str> {
     }
 }
 
-fn escape_html(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
 fn escape_html_attr(text: &str) -> String {
     escape_html(text).replace('"', "&quot;")
 }

@@ -249,7 +249,7 @@ impl ChannelAdapter for MqttAdapter {
         );
 
         // Subscribe to topic
-        client.subscribe(&self.subscribe_topic, self.qos).await?;
+        client.subscribe(&self.subscribe_topic, self.qos as QoS).await?;
 
         // Channel for incoming messages
         let (msg_tx, rx) = mpsc::channel::<ChannelMessage>(256);
@@ -264,7 +264,7 @@ impl ChannelAdapter for MqttAdapter {
         }
 
         let subscribe_topic = self.subscribe_topic.clone();
-        let qos = self.qos;
+        let qos: QoS = self.qos;
         let mut shutdown_rx = self.shutdown_rx.clone();
 
         // Spawn the event loop task

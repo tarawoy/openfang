@@ -50,6 +50,7 @@ pub mod gitter;
 pub mod gotify;
 pub mod linkedin;
 pub mod mumble;
+#[cfg(not(target_env = "musl"))]
 pub mod mqtt;
 pub mod ntfy;
 pub mod webhook;

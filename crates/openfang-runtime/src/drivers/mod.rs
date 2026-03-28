@@ -222,11 +222,6 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "VENICE_API_KEY",
             key_required: true,
         }),
-        "nvidia" | "nvidia-nim" => Some(ProviderDefaults {
-            base_url: NVIDIA_NIM_BASE_URL,
-            api_key_env: "NVIDIA_API_KEY",
-            key_required: true,
-        }),
         "azure" | "azure-openai" => Some(ProviderDefaults {
             base_url: AZURE_OPENAI_BASE_URL,
             api_key_env: "AZURE_OPENAI_API_KEY",
