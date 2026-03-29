@@ -78,6 +78,7 @@ pub enum LauncherChoice {
     OllamaMenu,
     OllamaStartLocal,
     OllamaStartCloud,
+    OllamaSetMode,
     OllamaSetApiKey,
     OllamaSetModel,
     ForceStop,
@@ -217,6 +218,11 @@ const MENU_OLLAMA: &[MenuItem] = &[
         label: "Start (cloud)",
         hint: "Use Ollama Cloud at api.ollama.com (needs API key)",
         choice: LauncherChoice::OllamaStartCloud,
+    },
+    MenuItem {
+        label: "Set mode (Local/Cloud)",
+        hint: "Force Ollama local or cloud endpoint + default model family",
+        choice: LauncherChoice::OllamaSetMode,
     },
     MenuItem {
         label: "Set API key",

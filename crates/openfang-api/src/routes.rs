@@ -6177,20 +6177,55 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
         catalog.list_providers().to_vec()
     };
 
-    // Collect local providers that need probing
-    let local_providers: Vec<(usize, String, String)> = provider_list
+    // Collect providers that can be probed right now.
+    // - local/no-key providers are always probed
+    // - key-required providers are probed only when a key is configured
+    let local_providers: Vec<(usize, String, String, Option<String>)> = provider_list
         .iter()
         .enumerate()
-        .filter(|(_, p)| !p.key_required && !p.base_url.is_empty())
-        .map(|(i, p)| (i, p.id.clone(), p.base_url.clone()))
+        .filter_map(|(i, p)| {
+            if p.base_url.is_empty() {
+                return None;
+            }
+
+            let mut api_key = if p.api_key_env.is_empty() {
+                None
+            } else {
+                std::env::var(&p.api_key_env)
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            };
+
+            // Provider-specific fallback env vars.
+            if api_key.is_none() && p.id == "gemini" {
+                api_key = std::env::var("GOOGLE_API_KEY")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty());
+            } else if api_key.is_none() && p.id == "codex" {
+                api_key = std::env::var("OPENAI_API_KEY")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty());
+            }
+
+            if p.key_required && api_key.is_none() {
+                return None;
+            }
+
+            Some((i, p.id.clone(), p.base_url.clone(), api_key))
+        })
         .collect();
 
     // Fire all probes concurrently (cached results return instantly)
     let cache = &state.provider_probe_cache;
     let probe_futures: Vec<_> = local_providers
         .iter()
-        .map(|(_, id, url)| {
-            openfang_runtime::provider_health::probe_provider_cached(id, url, cache)
+        .map(|(_, id, url, api_key)| {
+            openfang_runtime::provider_health::probe_provider_cached(
+                id,
+                url,
+                api_key.as_deref(),
+                cache,
+            )
         })
         .collect();
     let probe_results = futures::future::join_all(probe_futures).await;
@@ -6198,7 +6233,7 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
     // Index probe results by provider list position for O(1) lookup
     let mut probe_map: HashMap<usize, openfang_runtime::provider_health::ProbeResult> =
         HashMap::with_capacity(local_providers.len());
-    for ((idx, _, _), result) in local_providers.iter().zip(probe_results.into_iter()) {
+    for ((idx, _, _, _), result) in local_providers.iter().zip(probe_results.into_iter()) {
         probe_map.insert(*idx, result);
     }
 
@@ -7701,7 +7736,26 @@ pub async fn set_provider_url(
     }
 
     // Probe reachability at the new URL
-    let probe = openfang_runtime::provider_health::probe_provider(&name, &base_url).await;
+    let probe_key = {
+        let catalog = state
+            .kernel
+            .model_catalog
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let env_var = catalog
+            .get_provider(&name)
+            .map(|p| p.api_key_env.clone())
+            .unwrap_or_else(|| format!("{}_API_KEY", name.to_uppercase().replace('-', "_")));
+        std::env::var(&env_var)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+    };
+    let probe = openfang_runtime::provider_health::probe_provider(
+        &name,
+        &base_url,
+        probe_key.as_deref(),
+    )
+    .await;
 
     // Merge discovered models into catalog
     if !probe.discovered_models.is_empty() {

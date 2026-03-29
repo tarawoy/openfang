@@ -121,6 +121,19 @@ function toolIcon(toolName) {
 
 // Alpine.js global store
 document.addEventListener('alpine:init', function() {
+  // Accept one-time token bootstrap from URL query (e.g. /?token=...).
+  try {
+    var qp = new URLSearchParams(window.location.search || '');
+    var bootstrapToken = (qp.get('token') || '').trim();
+    if (bootstrapToken) {
+      localStorage.setItem('openfang-api-key', bootstrapToken);
+      OpenFangAPI.setAuthToken(bootstrapToken);
+      qp.delete('token');
+      var next = window.location.pathname + (qp.toString() ? ('?' + qp.toString()) : '') + window.location.hash;
+      window.history.replaceState({}, document.title, next);
+    }
+  } catch (e) { /* ignore malformed URL */ }
+
   // Restore saved API key on load
   var savedKey = localStorage.getItem('openfang-api-key');
   if (savedKey) OpenFangAPI.setAuthToken(savedKey);

@@ -28,6 +28,7 @@ use std::sync::atomic::Ordering;
 
 /// Global flag set by the Ctrl+C handler.
 static CTRLC_PRESSED: AtomicBool = AtomicBool::new(false);
+const OLLAMA_CLOUD_BASE_URL: &str = "https://ollama.com/v1";
 
 /// Install a Ctrl+C handler that force-exits the process.
 /// On Windows/MINGW, the default handler doesn't reliably interrupt blocking
@@ -942,6 +943,7 @@ fn main() {
                 launcher::LauncherChoice::OllamaMenu => {},
                 launcher::LauncherChoice::OllamaStartLocal => cmd_ollama_start_background(false),
                 launcher::LauncherChoice::OllamaStartCloud => cmd_ollama_start_background(true),
+                launcher::LauncherChoice::OllamaSetMode => cmd_ollama_set_mode(),
                 launcher::LauncherChoice::OllamaSetApiKey => cmd_ollama_set_api_key(),
                 launcher::LauncherChoice::OllamaSetModel => cmd_ollama_set_model(),
                 launcher::LauncherChoice::ForceStop => cmd_force_stop(),
@@ -1597,6 +1599,17 @@ fn read_api_key() -> Option<String> {
     None
 }
 
+fn build_dashboard_url(base: &str, api_key: Option<&str>) -> String {
+    let mut url = format!("{}/", base.trim_end_matches('/'));
+    if let Some(key) = api_key {
+        if !key.trim().is_empty() {
+            url.push_str("?token=");
+            url.push_str(key);
+        }
+    }
+    url
+}
+
 fn cmd_stop() {
     match find_daemon() {
         Some(base) => {
@@ -1706,6 +1719,7 @@ fn cmd_local_dashboard_launch() {
     match start_daemon_background() {
         Ok(url) => {
             let lan_ip = detect_lan_ip().unwrap_or_else(|| "<device-lan-ip>".to_string());
+            let dashboard_url = build_dashboard_url(&url, Some(&api_key));
             ui::blank();
             ui::success("Local dashboard launched");
             ui::kv("Daemon", &url);
@@ -1713,6 +1727,12 @@ fn cmd_local_dashboard_launch() {
             ui::kv("API key", &api_key);
             ui::hint("Using existing local dashboard API key.");
             ui::hint("Keep port 4200 blocked from WAN/public access.");
+            if copy_to_clipboard(&dashboard_url) {
+                ui::hint("URL copied to clipboard");
+            }
+            if !open_in_browser(&dashboard_url) {
+                ui::hint(&format!("Could not open browser. Visit: {dashboard_url}"));
+            }
         }
         Err(e) => {
             ui::error_with_fix(
@@ -1866,6 +1886,27 @@ fn cmd_ollama_start_background(cloud: bool) {
 
     cmd_config_set("default_model.provider", "ollama");
     cmd_config_set("default_model.model", &model);
+    let is_cloud_model = model.to_ascii_lowercase().ends_with(":cloud");
+    let base_url = if is_cloud_model {
+        OLLAMA_CLOUD_BASE_URL
+    } else {
+        openfang_types::model_catalog::OLLAMA_BASE_URL
+    };
+    cmd_config_set("default_model.base_url", base_url);
+    if is_cloud_model {
+        cmd_config_set("default_model.api_key_env", "OLLAMA_API_KEY");
+        let has_key = std::env::var("OLLAMA_API_KEY")
+            .ok()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+        if !has_key {
+            ui::error_with_fix(
+                "Ollama cloud mode requires OLLAMA_API_KEY",
+                "Use: Ollama start > Set API key",
+            );
+            std::process::exit(1);
+        }
+    }
 
     if cloud {
         // Ollama Cloud — point to api.ollama.com, require API key
@@ -1908,6 +1949,7 @@ fn cmd_ollama_start_background(cloud: bool) {
             ui::kv("Provider", "ollama");
             ui::kv("Model", &model);
             ui::kv("Mode", if cloud { "cloud (api.ollama.com)" } else { "local (localhost:11434)" });
+            ui::kv("Base URL", base_url);
         }
         Err(e) => {
             ui::error_with_fix(
@@ -1943,6 +1985,65 @@ fn cmd_ollama_set_api_key() {
     cmd_config_set("default_model.provider", "ollama");
     cmd_config_set("default_model.api_key_env", "OLLAMA_API_KEY");
     ui::success("Saved OLLAMA_API_KEY to ~/.openfang/secrets.env");
+}
+
+fn cmd_ollama_set_mode() {
+    let home = openfang_home();
+    let config_path = home.join("config.toml");
+    if !config_path.exists() {
+        ui::error_with_fix("No config file found", "Run `openfang init` first");
+        std::process::exit(1);
+    }
+
+    let current_model = read_default_model_value("provider")
+        .filter(|provider| provider == "ollama")
+        .and_then(|_| read_default_model_value("model"))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "glm-5:cloud".to_string());
+    let current_mode = if current_model.to_ascii_lowercase().ends_with(":cloud") {
+        "cloud"
+    } else {
+        "local"
+    };
+
+    let prompt = format!("Set Ollama mode [local/cloud] [{current_mode}]");
+    let mode_input = prompt_line(&prompt)
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| current_mode.to_string());
+    let mode = if mode_input.is_empty() {
+        current_mode
+    } else {
+        mode_input.as_str()
+    };
+
+    cmd_config_set("default_model.provider", "ollama");
+    match mode {
+        "local" | "l" => {
+            cmd_config_set("default_model.base_url", openfang_types::model_catalog::OLLAMA_BASE_URL);
+            if current_model.to_ascii_lowercase().ends_with(":cloud") {
+                cmd_config_set("default_model.model", "llama3.2");
+            }
+            ui::success("Ollama mode set to local");
+            ui::hint("Using local daemon endpoint and local model IDs.");
+        }
+        "cloud" | "c" => {
+            cmd_config_set("default_model.base_url", OLLAMA_CLOUD_BASE_URL);
+            cmd_config_set("default_model.api_key_env", "OLLAMA_API_KEY");
+            if !current_model.to_ascii_lowercase().ends_with(":cloud") {
+                cmd_config_set("default_model.model", "glm-5:cloud");
+            }
+            ui::success("Ollama mode set to cloud");
+            ui::hint("Using Ollama cloud endpoint and :cloud model IDs.");
+            ui::hint("Cloud mode uses OLLAMA_API_KEY (no local ollama serve required).");
+        }
+        _ => {
+            ui::error_with_fix(
+                "Invalid mode",
+                "Enter `local` or `cloud` (or l/c)",
+            );
+            std::process::exit(1);
+        }
+    }
 }
 
 fn cmd_ollama_set_model() {
@@ -3557,6 +3658,11 @@ decay_rate = 0.05
 // ---------------------------------------------------------------------------
 
 fn cmd_dashboard() {
+    if read_api_key().is_some() {
+        cmd_local_dashboard_launch();
+        return;
+    }
+
     let base = if let Some(url) = find_daemon() {
         url
     } else {
@@ -3577,7 +3683,7 @@ fn cmd_dashboard() {
         }
     };
 
-    let url = format!("{base}/");
+    let url = build_dashboard_url(&base, None);
     ui::success(&format!("Opening dashboard at {url}"));
     if copy_to_clipboard(&url) {
         ui::hint("URL copied to clipboard");
