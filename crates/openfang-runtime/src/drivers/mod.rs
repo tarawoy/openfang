@@ -433,6 +433,13 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .api_key
             .clone()
             .or_else(|| std::env::var(defaults.api_key_env).ok())
+            .or_else(|| {
+                // Provider-specific fallback env vars
+                match provider {
+                    "nim" => std::env::var("NVIDIA_API_KEY").ok(),
+                    _ => None,
+                }
+            })
             .unwrap_or_default();
 
         if defaults.key_required && api_key.is_empty() {

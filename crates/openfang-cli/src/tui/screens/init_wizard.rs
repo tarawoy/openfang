@@ -197,14 +197,6 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
-        name: "nvidia",
-        display: "NVIDIA NIM",
-        env_var: "NVIDIA_API_KEY",
-        default_model: "nvidia/llama-3.1-nemotron-70b-instruct",
-        needs_key: true,
-        hint: "",
-    },
-    ProviderInfo {
         name: "claude-code",
         display: "Claude Code",
         env_var: "",
@@ -218,7 +210,7 @@ const PROVIDERS: &[ProviderInfo] = &[
         env_var: "OLLAMA_API_KEY",
         default_model: "glm-5:cloud",
         needs_key: false,
-        hint: "local / cloud",
+        hint: "local or cloud",
     },
     ProviderInfo {
         name: "lmstudio",

@@ -940,7 +940,8 @@ fn main() {
                 launcher::LauncherChoice::LocalDashboardMenu => {},
                 launcher::LauncherChoice::LocalDashboardSetApi => cmd_local_dashboard_set_api(),
                 launcher::LauncherChoice::OllamaMenu => {},
-                launcher::LauncherChoice::OllamaStart => cmd_ollama_start_background(),
+                launcher::LauncherChoice::OllamaStartLocal => cmd_ollama_start_background(false),
+                launcher::LauncherChoice::OllamaStartCloud => cmd_ollama_start_background(true),
                 launcher::LauncherChoice::OllamaSetApiKey => cmd_ollama_set_api_key(),
                 launcher::LauncherChoice::OllamaSetModel => cmd_ollama_set_model(),
                 launcher::LauncherChoice::ForceStop => cmd_force_stop(),
@@ -1848,7 +1849,7 @@ fn cmd_exec_policy_remove_allowed() {
     cmd_config_array_remove(key, &value);
 }
 
-fn cmd_ollama_start_background() {
+fn cmd_ollama_start_background(cloud: bool) {
     let home = openfang_home();
     let config_path = home.join("config.toml");
 
@@ -1866,13 +1867,44 @@ fn cmd_ollama_start_background() {
     cmd_config_set("default_model.provider", "ollama");
     cmd_config_set("default_model.model", &model);
 
+    if cloud {
+        // Ollama Cloud — point to api.ollama.com, require API key
+        cmd_config_set("provider_urls.ollama", "https://api.ollama.com/v1");
+        cmd_config_set("default_model.api_key_env", "OLLAMA_API_KEY");
+
+        // Verify API key exists
+        let secrets_path = home.join("secrets.env");
+        let has_key = std::fs::read_to_string(&secrets_path)
+            .map(|s| s.contains("OLLAMA_API_KEY") && !s.contains("OLLAMA_API_KEY=\n") && !s.contains("OLLAMA_API_KEY=\r"))
+            .unwrap_or(false);
+        if !has_key && std::env::var("OLLAMA_API_KEY").is_err() {
+            ui::warning("No OLLAMA_API_KEY found. Set it first via 'Set API key' or export OLLAMA_API_KEY.");
+        }
+    } else {
+        // Ollama Local — remove any cloud URL override, use localhost
+        // We clear provider_urls.ollama so the default localhost URL is used
+        let content = std::fs::read_to_string(&config_path).unwrap_or_default();
+        let mut table: toml::Value = toml::from_str(&content).unwrap_or(toml::Value::Table(toml::map::Map::new()));
+        if let Some(urls) = table.get_mut("provider_urls").and_then(|v| v.as_table_mut()) {
+            urls.remove("ollama");
+            if urls.is_empty() {
+                table.as_table_mut().unwrap().remove("provider_urls");
+            }
+        }
+        if let Ok(updated) = toml::to_string_pretty(&table) {
+            let _ = std::fs::write(&config_path, updated);
+        }
+    }
+
     match start_daemon_background() {
         Ok(url) => {
             ui::blank();
-            ui::success("OpenFang started in background with Ollama");
+            let mode_label = if cloud { "Ollama Cloud" } else { "Ollama Local" };
+            ui::success(&format!("OpenFang started in background with {mode_label}"));
             ui::kv("Daemon", &url);
             ui::kv("Provider", "ollama");
             ui::kv("Model", &model);
+            ui::kv("Mode", if cloud { "cloud (api.ollama.com)" } else { "local (localhost:11434)" });
         }
         Err(e) => {
             ui::error_with_fix(

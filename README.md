@@ -65,8 +65,8 @@ openfang start
 
 This fork keeps upstream OpenFang and adds device-oriented workflow improvements for local deployment.
 
-- NIM provider support
-- Ollama local or cloud choice during init/setup
+- NIM provider support (single entry, supports both `NVIDIA_NIM_API_KEY` and `NVIDIA_API_KEY`)
+- Ollama local or cloud choice during init/setup (cloud uses api.ollama.com, no `ollama serve` needed)
 - Launcher submenus for Ollama, Local dashboard, Exec policy, and Auto start
 - Dashboard per-agent exec policy override
 - Better channel edit prefill in the dashboard
@@ -96,20 +96,27 @@ Running `openfang` with no subcommand opens the interactive launcher. The curren
 
 `Ollama start` is now a submenu:
 
-- `Start with Ollama`
+- `Start (local)` — use local Ollama serve at localhost:11434
+- `Start (cloud)` — use Ollama Cloud at api.ollama.com (requires API key)
 - `Set API key`
 - `Set model`
 
 Behavior:
 
+- `Start (local)` sets:
+  - `default_model.provider = "ollama"`
+  - `default_model.model = <saved model or glm-5:cloud>`
+  - removes any `provider_urls.ollama` override so the default localhost URL is used
+  - no API key required
+- `Start (cloud)` sets:
+  - `default_model.provider = "ollama"`
+  - `default_model.model = <saved model or glm-5:cloud>`
+  - `default_model.api_key_env = "OLLAMA_API_KEY"`
+  - `provider_urls.ollama = "https://api.ollama.com/v1"`
+  - warns if no `OLLAMA_API_KEY` is configured
 - `Set API key` writes `OLLAMA_API_KEY` into `~/.openfang/secrets.env`
 - `Set model` updates `default_model.model`
-- `Start with Ollama` sets:
-  - `default_model.provider = "ollama"`
-  - `default_model.api_key_env = "OLLAMA_API_KEY"`
-  - `default_model.model = <saved model or glm-5:cloud>`
-- `Start with Ollama` launches the local OpenFang daemon in the background
-- It uses the existing `OLLAMA_API_KEY`; it does not overwrite the key unless you explicitly choose `Set API key`
+- Both start options launch the local OpenFang daemon in the background
 
 ### Local dashboard
 
@@ -482,9 +489,9 @@ For production workloads, use the [WhatsApp Cloud API](https://developers.facebo
 
 ---
 
-## 27 LLM Providers — 123+ Models
+## 27+ LLM Providers — 100+ Models
 
-3 native drivers (Anthropic, Gemini, OpenAI-compatible) route to 27 providers:
+3 native drivers (Anthropic, Gemini, OpenAI-compatible) route to 27+ providers:
 
 Anthropic, Gemini, OpenAI, Groq, DeepSeek, OpenRouter, Together, Mistral, Fireworks, Cohere, Perplexity, xAI, AI21, Cerebras, SambaNova, HuggingFace, Replicate, Ollama, vLLM, LM Studio, Qwen, MiniMax, Zhipu, Moonshot, Qianfan, Bedrock, and more.
 
@@ -529,44 +536,6 @@ curl -X POST localhost:4200/v1/chat/completions \
 
 ---
 
-## Quick Start
-
-```bash
-# 1. Install (macOS/Linux)
-curl -fsSL https://openfang.sh/install | sh
-
-# 2. Initialize — walks you through provider setup
-openfang init
-
-# 3. Start the daemon
-openfang start
-
-# 4. Dashboard is live at http://localhost:4200
-
-# 5. Activate a Hand — it starts working for you
-openfang hand activate researcher
-
-# 6. Chat with an agent
-openfang chat researcher
-> "What are the emerging trends in AI agent frameworks?"
-
-# 7. Spawn a pre-built agent
-openfang agent spawn coder
-```
-
-<details>
-<summary><strong>Windows (PowerShell)</strong></summary>
-
-```powershell
-irm https://openfang.sh/install.ps1 | iex
-openfang init
-openfang start
-```
-
-</details>
-
----
-
 ## Development
 
 ```bash
@@ -587,7 +556,7 @@ cargo fmt --all -- --check
 
 ## Stability Notice
 
-OpenFang v0.3.30 is pre-1.0. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
+OpenFang v0.3.46 is pre-1.0. The architecture is solid, the test suite is comprehensive, and the security model is comprehensive. That said:
 
 - **Breaking changes** may occur between minor versions until v1.0
 - **Some Hands** are more mature than others (Browser and Researcher are the most battle-tested)

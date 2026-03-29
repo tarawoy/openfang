@@ -86,6 +86,7 @@ impl ModelCatalog {
             // Secondary: provider-specific fallback auth
             let has_fallback = match provider.id.as_str() {
                 "gemini" => std::env::var("GOOGLE_API_KEY").is_ok(),
+                "nim" => std::env::var("NVIDIA_API_KEY").is_ok(),
                 "codex" => {
                     std::env::var("OPENAI_API_KEY").is_ok() || read_codex_credential().is_some()
                 }
@@ -760,16 +761,6 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             display_name: "Venice.ai".into(),
             api_key_env: "VENICE_API_KEY".into(),
             base_url: VENICE_BASE_URL.into(),
-            key_required: true,
-            auth_status: AuthStatus::Missing,
-            model_count: 0,
-        },
-        // ── NVIDIA NIM ────────────────────────────────────────────────
-        ProviderInfo {
-            id: "nvidia".into(),
-            display_name: "NVIDIA NIM".into(),
-            api_key_env: "NVIDIA_API_KEY".into(),
-            base_url: NVIDIA_NIM_BASE_URL.into(),
             key_required: true,
             auth_status: AuthStatus::Missing,
             model_count: 0,
@@ -2240,7 +2231,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "nvidia/llama-3.1-nemotron-70b-instruct".into(),
             display_name: "Nemotron 70B Instruct (NVIDIA NIM)".into(),
-            provider: "nvidia".into(),
+            provider: "nim".into(),
             tier: ModelTier::Smart,
             context_window: 128_000,
             max_output_tokens: 4_096,
@@ -2254,7 +2245,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "meta/llama-3.1-405b-instruct".into(),
             display_name: "Llama 3.1 405B Instruct (NVIDIA NIM)".into(),
-            provider: "nvidia".into(),
+            provider: "nim".into(),
             tier: ModelTier::Frontier,
             context_window: 128_000,
             max_output_tokens: 4_096,
@@ -2269,7 +2260,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "meta/llama-3.1-70b-instruct".into(),
             display_name: "Llama 3.1 70B Instruct (NVIDIA NIM)".into(),
-            provider: "nvidia".into(),
+            provider: "nim".into(),
             tier: ModelTier::Balanced,
             context_window: 128_000,
             max_output_tokens: 4_096,
@@ -2283,7 +2274,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "mistralai/mistral-large-latest".into(),
             display_name: "Mistral Large (NVIDIA NIM)".into(),
-            provider: "nvidia".into(),
+            provider: "nim".into(),
             tier: ModelTier::Smart,
             context_window: 128_000,
             max_output_tokens: 4_096,
@@ -2298,7 +2289,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "nvidia/nemotron-4-340b-instruct".into(),
             display_name: "Nemotron 4 340B Instruct (NVIDIA NIM)".into(),
-            provider: "nvidia".into(),
+            provider: "nim".into(),
             tier: ModelTier::Frontier,
             context_window: 4_096,
             max_output_tokens: 4_096,
