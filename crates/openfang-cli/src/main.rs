@@ -1884,6 +1884,14 @@ fn cmd_ollama_start_background(cloud: bool) {
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "glm-5:cloud".to_string());
 
+    if let Err(e) = upsert_provider_url("ollama", "https://api.ollama.com/v1") {
+        ui::error_with_fix(
+            "Failed to persist Ollama Cloud endpoint",
+            &format!("{e}. Update [provider_urls].ollama in config.toml manually."),
+        );
+        std::process::exit(1);
+    }
+
     cmd_config_set("default_model.provider", "ollama");
     cmd_config_set("default_model.model", &model);
     let is_cloud_model = model.to_ascii_lowercase().ends_with(":cloud");
@@ -2089,6 +2097,41 @@ fn read_default_model_value(key: &str) -> Option<String> {
         .get(key)?
         .as_str()
         .map(ToString::to_string)
+}
+
+fn upsert_provider_url(provider: &str, base_url: &str) -> Result<(), String> {
+    let config_path = openfang_home().join("config.toml");
+    let content = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read config.toml: {e}"))?;
+    let mut root: toml::value::Table = content
+        .parse::<toml::Value>()
+        .map_err(|e| format!("Failed to parse config.toml: {e}"))?
+        .as_table()
+        .cloned()
+        .ok_or_else(|| "config.toml root is not a table".to_string())?;
+
+    if !root.contains_key("provider_urls") {
+        root.insert(
+            "provider_urls".to_string(),
+            toml::Value::Table(toml::value::Table::new()),
+        );
+    }
+
+    let table = root
+        .get_mut("provider_urls")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| "provider_urls is not a table".to_string())?;
+    table.insert(
+        provider.to_string(),
+        toml::Value::String(base_url.to_string()),
+    );
+
+    let serialized =
+        toml::to_string_pretty(&toml::Value::Table(root)).map_err(|e| format!("{e}"))?;
+    std::fs::write(&config_path, serialized)
+        .map_err(|e| format!("Failed to write config.toml: {e}"))?;
+    restrict_file_permissions(&config_path);
+    Ok(())
 }
 
 fn read_exec_policy_mode() -> Option<String> {

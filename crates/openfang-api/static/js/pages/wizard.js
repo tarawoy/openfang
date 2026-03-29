@@ -332,7 +332,7 @@ function wizardPage() {
     },
 
     get popularProviders() {
-      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter', 'claude-code'];
+      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter', 'nim', 'ollama', 'claude-code'];
       return this.providers.filter(function(p) {
         return popular.indexOf(p.id) >= 0;
       }).sort(function(a, b) {
@@ -341,7 +341,7 @@ function wizardPage() {
     },
 
     get otherProviders() {
-      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter', 'claude-code'];
+      var popular = ['anthropic', 'openai', 'gemini', 'groq', 'deepseek', 'openrouter', 'nim', 'ollama', 'claude-code'];
       return this.providers.filter(function(p) {
         return popular.indexOf(p.id) < 0;
       });
@@ -362,6 +362,8 @@ function wizardPage() {
         groq: { url: 'https://console.groq.com/keys', text: 'Get your key from the Groq Console (free tier available)' },
         deepseek: { url: 'https://platform.deepseek.com/api_keys', text: 'Get your key from the DeepSeek Platform (very affordable)' },
         openrouter: { url: 'https://openrouter.ai/keys', text: 'Get your key from OpenRouter (access 100+ models with one key)' },
+        nim: { url: 'https://build.nvidia.com/', text: 'Get your key from NVIDIA Build / NIM' },
+        ollama: { url: 'https://ollama.com/settings/keys', text: 'Get your key from Ollama Cloud settings' },
         mistral: { url: 'https://console.mistral.ai/api-keys', text: 'Get your key from the Mistral Console' },
         together: { url: 'https://api.together.xyz/settings/api-keys', text: 'Get your key from Together AI' },
         fireworks: { url: 'https://fireworks.ai/account/api-keys', text: 'Get your key from Fireworks AI' },
@@ -471,8 +473,9 @@ function wizardPage() {
         model = this.defaultModelForProvider(provider) || tpl.model;
       }
 
-      var toml = '[agent]\n';
+      var toml = '';
       toml += 'name = "' + wizardTomlBasicEscape(name) + '"\n';
+      toml += 'version = "0.1.0"\n';
       toml += 'description = "' + wizardTomlBasicEscape(tpl.description) + '"\n';
       toml += 'profile = "' + tpl.profile + '"\n\n';
       toml += '[model]\nprovider = "' + provider + '"\n';
@@ -504,6 +507,8 @@ function wizardPage() {
         groq: 'llama-3.3-70b-versatile',
         deepseek: 'deepseek-chat',
         openrouter: 'openrouter/google/gemini-2.5-flash',
+        nim: 'meta/llama-3.1-70b-instruct',
+        ollama: 'glm-5',
         mistral: 'mistral-large-latest',
         together: 'meta-llama/Llama-3-70b-chat-hf',
         fireworks: 'accounts/fireworks/models/llama-v3p1-70b-instruct',

@@ -241,6 +241,44 @@ function settingsPage() {
         var data = await OpenFangAPI.get('/api/models');
         this.models = data.models || [];
       } catch(e) { this.models = []; }
+
+      // Dashboard fallback: ensure discovered provider models are visible
+      // even when static catalog data is stale or partial.
+      try {
+        var p = await OpenFangAPI.get('/api/providers');
+        this.mergeDiscoveredModels(p.providers || []);
+      } catch(e) { /* keep base model list */ }
+    },
+
+    mergeDiscoveredModels(providers) {
+      if (!providers || !providers.length) return;
+      var seen = {};
+      for (var i = 0; i < this.models.length; i++) {
+        seen[this.models[i].id] = true;
+      }
+      for (var pi = 0; pi < providers.length; pi++) {
+        var prov = providers[pi];
+        var discovered = prov.discovered_models || [];
+        for (var mi = 0; mi < discovered.length; mi++) {
+          var id = discovered[mi];
+          if (!id || seen[id]) continue;
+          this.models.push({
+            id: id,
+            display_name: id,
+            provider: prov.id || 'unknown',
+            tier: 'custom',
+            context_window: 0,
+            max_output_tokens: 0,
+            input_cost_per_m: 0,
+            output_cost_per_m: 0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            available: prov.auth_status !== 'missing'
+          });
+          seen[id] = true;
+        }
+      }
     },
 
     async addCustomModel() {

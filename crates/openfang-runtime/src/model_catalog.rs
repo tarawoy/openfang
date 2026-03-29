@@ -5,14 +5,14 @@
 
 use openfang_types::model_catalog::{
     AuthStatus, ModelCatalogEntry, ModelTier, ProviderInfo, AI21_BASE_URL, ANTHROPIC_BASE_URL,
-    AZURE_OPENAI_BASE_URL, BEDROCK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL, COHERE_BASE_URL,
-    DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
+    AZURE_OPENAI_BASE_URL, BEDROCK_BASE_URL, BLINK_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL,
+    COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GITHUB_COPILOT_BASE_URL,
+    GROQ_BASE_URL, HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
     MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL,
     OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
     REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
-    VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL,
+    ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::collections::HashMap;
 
@@ -597,6 +597,15 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             model_count: 0,
         },
         ProviderInfo {
+            id: "blink".into(),
+            display_name: "blink".into(),
+            api_key_env: "BLINK_API_KEY".into(),
+            base_url: BLINK_BASE_URL.into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
+        ProviderInfo {
             id: "mistral".into(),
             display_name: "Mistral AI".into(),
             api_key_env: "MISTRAL_API_KEY".into(),
@@ -942,6 +951,7 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("gemini-pro", "gemini-3.1-pro-preview"),
         ("gemini-flash", "gemini-3-flash-preview"),
         ("deepseek", "deepseek-chat"),
+        ("blink", "blink"),
         ("llama", "llama-3.3-70b-versatile"),
         ("llama-70b", "llama-3.3-70b-versatile"),
         ("mixtral", "mixtral-8x7b-32768"),
@@ -1728,6 +1738,48 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             output_cost_per_m: 0.60,
             supports_tools: true,
             supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "blink".into(),
+            display_name: "Blink (Auto)".into(),
+            provider: "blink".into(),
+            tier: ModelTier::Balanced,
+            context_window: 128_000,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["blink-auto".into()],
+        },
+        ModelCatalogEntry {
+            id: "openrouter/optimus".into(),
+            display_name: "OpenRouter Optimus".into(),
+            provider: "openrouter".into(),
+            tier: ModelTier::Balanced,
+            context_window: 200_000,
+            max_output_tokens: 32_000,
+            input_cost_per_m: 0.50,
+            output_cost_per_m: 1.50,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "openrouter/nitro".into(),
+            display_name: "OpenRouter Nitro".into(),
+            provider: "openrouter".into(),
+            tier: ModelTier::Fast,
+            context_window: 128_000,
+            max_output_tokens: 16_000,
+            input_cost_per_m: 0.20,
+            output_cost_per_m: 0.60,
+            supports_tools: true,
+            supports_vision: false,
             supports_streaming: true,
             aliases: vec![],
         },
@@ -4152,7 +4204,7 @@ mod tests {
     #[test]
     fn test_catalog_has_providers() {
         let catalog = ModelCatalog::new();
-        assert_eq!(catalog.list_providers().len(), 41);
+        assert_eq!(catalog.list_providers().len(), 42);
     }
 
     #[test]

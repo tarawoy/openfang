@@ -15,14 +15,14 @@ pub mod vertex;
 
 use crate::llm_driver::{DriverConfig, LlmDriver, LlmError};
 use openfang_types::model_catalog::{
-    AI21_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, CEREBRAS_BASE_URL, CHUTES_BASE_URL,
-    COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL, GROQ_BASE_URL,
-    HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
+    AI21_BASE_URL, ANTHROPIC_BASE_URL, AZURE_OPENAI_BASE_URL, BLINK_BASE_URL, CEREBRAS_BASE_URL,
+    CHUTES_BASE_URL, COHERE_BASE_URL, DEEPSEEK_BASE_URL, FIREWORKS_BASE_URL, GEMINI_BASE_URL,
+    GROQ_BASE_URL, HUGGINGFACE_BASE_URL, KIMI_CODING_BASE_URL, LEMONADE_BASE_URL, LMSTUDIO_BASE_URL,
     MINIMAX_BASE_URL, MISTRAL_BASE_URL, MOONSHOT_BASE_URL, NVIDIA_NIM_BASE_URL, OLLAMA_BASE_URL,
     OPENAI_BASE_URL, OPENROUTER_BASE_URL, PERPLEXITY_BASE_URL, QIANFAN_BASE_URL, QWEN_BASE_URL,
     REPLICATE_BASE_URL, SAMBANOVA_BASE_URL, TOGETHER_BASE_URL, VENICE_BASE_URL, VLLM_BASE_URL,
-    VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL,
-    ZAI_CODING_BASE_URL, ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
+    VOLCENGINE_BASE_URL, VOLCENGINE_CODING_BASE_URL, XAI_BASE_URL, ZAI_BASE_URL, ZAI_CODING_BASE_URL,
+    ZHIPU_BASE_URL, ZHIPU_CODING_BASE_URL,
 };
 use std::sync::Arc;
 
@@ -45,6 +45,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
         "openrouter" => Some(ProviderDefaults {
             base_url: OPENROUTER_BASE_URL,
             api_key_env: "OPENROUTER_API_KEY",
+            key_required: true,
+        }),
+        "blink" => Some(ProviderDefaults {
+            base_url: BLINK_BASE_URL,
+            api_key_env: "BLINK_API_KEY",
             key_required: true,
         }),
         "deepseek" => Some(ProviderDefaults {
@@ -244,6 +249,7 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
 /// - `openai` — OpenAI GPT models
 /// - `groq` — Groq (ultra-fast inference)
 /// - `openrouter` — OpenRouter (multi-model gateway)
+/// - `blink` — Blink gateway (OpenAI-compatible)
 /// - `deepseek` — DeepSeek
 /// - `together` — Together AI
 /// - `mistral` — Mistral AI
@@ -567,6 +573,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "openai",
         "groq",
         "openrouter",
+        "blink",
         "deepseek",
         "together",
         "mistral",
@@ -677,6 +684,7 @@ mod tests {
         let providers = known_providers();
         assert!(providers.contains(&"groq"));
         assert!(providers.contains(&"openrouter"));
+        assert!(providers.contains(&"blink"));
         assert!(providers.contains(&"anthropic"));
         assert!(providers.contains(&"gemini"));
         // New providers
@@ -702,9 +710,10 @@ mod tests {
         assert!(providers.contains(&"nvidia"));
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"claude-code"));
+        assert!(providers.contains(&"blink"));
         assert!(providers.contains(&"qwen-code"));
         assert!(providers.contains(&"azure"));
-        assert_eq!(providers.len(), 37);
+        assert_eq!(providers.len(), 38);
     }
 
     #[test]
