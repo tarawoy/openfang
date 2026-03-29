@@ -1878,7 +1878,10 @@ fn cmd_ollama_start_background(cloud: bool) {
             .map(|s| s.contains("OLLAMA_API_KEY") && !s.contains("OLLAMA_API_KEY=\n") && !s.contains("OLLAMA_API_KEY=\r"))
             .unwrap_or(false);
         if !has_key && std::env::var("OLLAMA_API_KEY").is_err() {
-            ui::warning("No OLLAMA_API_KEY found. Set it first via 'Set API key' or export OLLAMA_API_KEY.");
+            ui::warn_with_fix(
+                "No OLLAMA_API_KEY found",
+                "Set it first via 'Set API key' or export OLLAMA_API_KEY",
+            );
         }
     } else {
         // Ollama Local — remove any cloud URL override, use localhost
