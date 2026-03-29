@@ -101,7 +101,7 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
-        name: "nim",
+        name: "nvidia",
         display: "NVIDIA NIM",
         env_var: "NVIDIA_NIM_API_KEY",
         default_model: "meta/llama-3.1-70b-instruct",

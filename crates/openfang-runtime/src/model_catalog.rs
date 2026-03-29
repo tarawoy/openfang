@@ -23,6 +23,17 @@ pub struct ModelCatalog {
     providers: Vec<ProviderInfo>,
 }
 
+fn canonical_provider_id(provider: &str) -> &str {
+    match provider {
+        "nim" | "nvidia-nim" => "nvidia",
+        other => other,
+    }
+}
+
+fn provider_matches(model_provider: &str, requested_provider: &str) -> bool {
+    canonical_provider_id(model_provider) == canonical_provider_id(requested_provider)
+}
+
 impl ModelCatalog {
     /// Create a new catalog populated with builtin models and providers.
     pub fn new() -> Self {
@@ -40,7 +51,10 @@ impl ModelCatalog {
 
         // Set model counts on providers
         for provider in &mut providers {
-            provider.model_count = models.iter().filter(|m| m.provider == provider.id).count();
+            provider.model_count = models
+                .iter()
+                .filter(|m| provider_matches(&m.provider, &provider.id))
+                .count();
         }
 
         Self {
@@ -86,7 +100,7 @@ impl ModelCatalog {
             // Secondary: provider-specific fallback auth
             let has_fallback = match provider.id.as_str() {
                 "gemini" => std::env::var("GOOGLE_API_KEY").is_ok(),
-                "nim" => std::env::var("NVIDIA_API_KEY").is_ok(),
+                "nim" | "nvidia" => std::env::var("NVIDIA_API_KEY").is_ok(),
                 "codex" => {
                     std::env::var("OPENAI_API_KEY").is_ok() || read_codex_credential().is_some()
                 }
@@ -194,7 +208,7 @@ impl ModelCatalog {
         let mut provider_ci: Option<&ModelCatalogEntry> = None;
 
         for m in &self.models {
-            if m.provider != provider {
+            if !provider_matches(&m.provider, provider) {
                 continue;
             }
             if m.id.to_lowercase() != lower {
@@ -216,7 +230,7 @@ impl ModelCatalog {
         if let Some(entry) = self
             .models
             .iter()
-            .find(|m| m.provider == provider && m.display_name.to_lowercase() == lower)
+            .find(|m| provider_matches(&m.provider, provider) && m.display_name.to_lowercase() == lower)
         {
             return Some(entry);
         }
@@ -227,7 +241,7 @@ impl ModelCatalog {
             if let Some(entry) = self
                 .models
                 .iter()
-                .find(|m| m.id == *canonical && m.provider == provider)
+                .find(|m| m.id == *canonical && provider_matches(&m.provider, provider))
             {
                 return Some(entry);
             }
@@ -251,14 +265,16 @@ impl ModelCatalog {
 
     /// Get a provider by ID.
     pub fn get_provider(&self, provider_id: &str) -> Option<&ProviderInfo> {
-        self.providers.iter().find(|p| p.id == provider_id)
+        self.providers
+            .iter()
+            .find(|p| provider_matches(&p.id, provider_id))
     }
 
     /// List models from a specific provider.
     pub fn models_by_provider(&self, provider: &str) -> Vec<&ModelCatalogEntry> {
         self.models
             .iter()
-            .filter(|m| m.provider == provider)
+            .filter(|m| provider_matches(&m.provider, provider))
             .collect()
     }
 
@@ -271,7 +287,7 @@ impl ModelCatalog {
         // Fall back to the first model registered for this provider
         self.models
             .iter()
-            .find(|m| m.provider == provider)
+            .find(|m| provider_matches(&m.provider, provider))
             .map(|m| m.id.clone())
     }
 
@@ -304,7 +320,11 @@ impl ModelCatalog {
     ///
     /// Returns `true` if the provider was found and updated.
     pub fn set_provider_url(&mut self, provider: &str, url: &str) -> bool {
-        if let Some(p) = self.providers.iter_mut().find(|p| p.id == provider) {
+        if let Some(p) = self
+            .providers
+            .iter_mut()
+            .find(|p| provider_matches(&p.id, provider))
+        {
             p.base_url = url.to_string();
             true
         } else {
@@ -335,7 +355,11 @@ impl ModelCatalog {
         for (provider, url) in overrides {
             if self.set_provider_url(provider, url) {
                 // Mark as configured so models from this provider show as available
-                if let Some(p) = self.providers.iter_mut().find(|p| p.id == *provider) {
+                if let Some(p) = self
+                    .providers
+                    .iter_mut()
+                    .find(|p| provider_matches(&p.id, provider))
+                {
                     if p.auth_status == AuthStatus::Missing {
                         p.auth_status = AuthStatus::Configured;
                     }
@@ -358,7 +382,7 @@ impl ModelCatalog {
         let existing_ids: std::collections::HashSet<String> = self
             .models
             .iter()
-            .filter(|m| m.provider == provider)
+            .filter(|m| provider_matches(&m.provider, provider))
             .map(|m| m.id.to_lowercase())
             .collect();
 
@@ -393,11 +417,15 @@ impl ModelCatalog {
 
         // Update model count on the provider
         if added > 0 {
-            if let Some(p) = self.providers.iter_mut().find(|p| p.id == provider) {
+            if let Some(p) = self
+                .providers
+                .iter_mut()
+                .find(|p| provider_matches(&p.id, provider))
+            {
                 p.model_count = self
                     .models
                     .iter()
-                    .filter(|m| m.provider == provider)
+                    .filter(|m| provider_matches(&m.provider, provider))
                     .count();
             }
         }
@@ -427,11 +455,15 @@ impl ModelCatalog {
         self.models.push(entry);
 
         // Update provider model count
-        if let Some(p) = self.providers.iter_mut().find(|p| p.id == provider) {
+        if let Some(p) = self
+            .providers
+            .iter_mut()
+            .find(|p| provider_matches(&p.id, &provider))
+        {
             p.model_count = self
                 .models
                 .iter()
-                .filter(|m| m.provider == provider)
+                .filter(|m| provider_matches(&m.provider, &provider))
                 .count();
         }
         true
@@ -633,7 +665,7 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             model_count: 0,
         },
         ProviderInfo {
-            id: "nim".into(),
+            id: "nvidia".into(),
             display_name: "NVIDIA NIM".into(),
             api_key_env: "NVIDIA_NIM_API_KEY".into(),
             base_url: NVIDIA_NIM_BASE_URL.into(),
@@ -961,6 +993,7 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("deepseek-v3", "deepseek-chat"),
         ("deepseek-r1", "deepseek-reasoner"),
         ("nim", "meta/llama-3.1-70b-instruct"),
+        ("nvidia", "meta/llama-3.1-70b-instruct"),
         ("nvidia-nim", "meta/llama-3.1-70b-instruct"),
         // Mistral aliases
         ("mistral-nemo", "open-mistral-nemo"),
@@ -2289,7 +2322,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "nvidia/llama-3.1-nemotron-70b-instruct".into(),
             display_name: "Nemotron 70B Instruct (NVIDIA NIM)".into(),
-            provider: "nim".into(),
+            provider: "nvidia".into(),
             tier: ModelTier::Smart,
             context_window: 128_000,
             max_output_tokens: 4_096,
@@ -2303,7 +2336,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "meta/llama-3.1-405b-instruct".into(),
             display_name: "Llama 3.1 405B Instruct (NVIDIA NIM)".into(),
-            provider: "nim".into(),
+            provider: "nvidia".into(),
             tier: ModelTier::Frontier,
             context_window: 128_000,
             max_output_tokens: 4_096,
@@ -2317,7 +2350,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "meta/llama-3.1-70b-instruct".into(),
             display_name: "Llama 3.1 70B Instruct (NVIDIA NIM)".into(),
-            provider: "nim".into(),
+            provider: "nvidia".into(),
             tier: ModelTier::Balanced,
             context_window: 128_000,
             max_output_tokens: 4_096,
@@ -2331,7 +2364,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "meta/llama-3.3-70b-instruct".into(),
             display_name: "Llama 3.3 70B Instruct (NIM)".into(),
-            provider: "nim".into(),
+            provider: "nvidia".into(),
             tier: ModelTier::Frontier,
             context_window: 131_072,
             max_output_tokens: 8_192,
@@ -2345,7 +2378,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "meta/llama-3.2-90b-vision-instruct".into(),
             display_name: "Llama 3.2 90B Vision Instruct (NIM)".into(),
-            provider: "nim".into(),
+            provider: "nvidia".into(),
             tier: ModelTier::Frontier,
             context_window: 131_072,
             max_output_tokens: 8_192,
@@ -2359,7 +2392,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "mistralai/mistral-large-latest".into(),
             display_name: "Mistral Large (NVIDIA NIM)".into(),
-            provider: "nim".into(),
+            provider: "nvidia".into(),
             tier: ModelTier::Smart,
             context_window: 128_000,
             max_output_tokens: 4_096,
@@ -2373,7 +2406,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "nvidia/nemotron-4-340b-instruct".into(),
             display_name: "Nemotron 4 340B Instruct (NVIDIA NIM)".into(),
-            provider: "nim".into(),
+            provider: "nvidia".into(),
             tier: ModelTier::Frontier,
             context_window: 131_072,
             max_output_tokens: 8_192,
@@ -2387,7 +2420,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "deepseek-ai/deepseek-r1".into(),
             display_name: "DeepSeek R1 (NIM)".into(),
-            provider: "nim".into(),
+            provider: "nvidia".into(),
             tier: ModelTier::Frontier,
             context_window: 4_096,
             max_output_tokens: 4_096,
@@ -2401,7 +2434,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "mistralai/mistral-large-2-instruct".into(),
             display_name: "Mistral Large 2 Instruct (NIM)".into(),
-            provider: "nim".into(),
+            provider: "nvidia".into(),
             tier: ModelTier::Smart,
             context_window: 128_000,
             max_output_tokens: 8_192,
@@ -2415,7 +2448,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "mistralai/mixtral-8x22b-instruct-v0.1".into(),
             display_name: "Mixtral 8x22B Instruct (NIM)".into(),
-            provider: "nim".into(),
+            provider: "nvidia".into(),
             tier: ModelTier::Balanced,
             context_window: 65_536,
             max_output_tokens: 8_192,
@@ -2429,7 +2462,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "google/gemma-2-27b-it".into(),
             display_name: "Gemma 2 27B IT (NIM)".into(),
-            provider: "nim".into(),
+            provider: "nvidia".into(),
             tier: ModelTier::Balanced,
             context_window: 32_768,
             max_output_tokens: 8_192,
@@ -2443,7 +2476,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
         ModelCatalogEntry {
             id: "qwen/qwen2.5-coder-32b-instruct".into(),
             display_name: "Qwen2.5 Coder 32B Instruct (NIM)".into(),
-            provider: "nim".into(),
+            provider: "nvidia".into(),
             tier: ModelTier::Smart,
             context_window: 32_768,
             max_output_tokens: 8_192,

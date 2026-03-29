@@ -442,7 +442,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .or_else(|| {
                 // Provider-specific fallback env vars
                 match provider {
-                    "nim" => std::env::var("NVIDIA_API_KEY").ok(),
+                    "nim" | "nvidia" => std::env::var("NVIDIA_API_KEY").ok(),
                     _ => None,
                 }
             })
@@ -537,6 +537,7 @@ pub fn detect_available_provider() -> Option<(&'static str, &'static str, &'stat
             "accounts/fireworks/models/llama-v3p1-70b-instruct",
             "FIREWORKS_API_KEY",
         ),
+        ("nvidia", "meta/llama-3.1-70b-instruct", "NVIDIA_NIM_API_KEY"),
         ("xai", "grok-2", "XAI_API_KEY"),
         (
             "perplexity",

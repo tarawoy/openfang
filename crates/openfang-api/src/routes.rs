@@ -46,6 +46,39 @@ pub struct AppState {
     pub budget_config: Arc<tokio::sync::RwLock<openfang_types::config::BudgetConfig>>,
 }
 
+fn parse_manifest_with_legacy_compat(manifest_toml: &str) -> Result<AgentManifest, toml::de::Error> {
+    match toml::from_str::<AgentManifest>(manifest_toml) {
+        Ok(manifest) => Ok(manifest),
+        Err(primary_err) => {
+            let mut value: toml::Value = match toml::from_str(manifest_toml) {
+                Ok(v) => v,
+                Err(_) => return Err(primary_err),
+            };
+
+            let mut normalized = false;
+            if let Some(root) = value.as_table_mut() {
+                if let Some(agent_table) = root.get("agent").and_then(|v| v.as_table()).cloned() {
+                    for (key, val) in agent_table {
+                        if !root.contains_key(&key) {
+                            root.insert(key, val);
+                            normalized = true;
+                        }
+                    }
+                }
+            }
+
+            if !normalized {
+                return Err(primary_err);
+            }
+
+            match toml::from_str::<AgentManifest>(&value.to_string()) {
+                Ok(manifest) => Ok(manifest),
+                Err(_) => Err(primary_err),
+            }
+        }
+    }
+}
+
 /// POST /api/agents — Spawn a new agent.
 pub async fn spawn_agent(
     State(state): State<Arc<AppState>>,
@@ -135,7 +168,7 @@ pub async fn spawn_agent(
         }
     }
 
-    let manifest: AgentManifest = match toml::from_str(&manifest_toml) {
+    let manifest: AgentManifest = match parse_manifest_with_legacy_compat(&manifest_toml) {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!("Invalid manifest TOML: {e}");

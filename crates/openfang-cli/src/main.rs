@@ -1706,13 +1706,18 @@ fn cmd_local_dashboard_launch() {
         std::process::exit(1);
     }
 
-    let api_key = read_api_key().unwrap_or_else(|| {
-        ui::error_with_fix(
-            "No dashboard API key configured",
-            "Choose Local dashboard > Set API Dashboard (generate API) first",
-        );
-        std::process::exit(1);
-    });
+    let (api_key, generated_new_key) = match read_api_key() {
+        Some(key) => (key, false),
+        None => {
+            let key = format!(
+                "{}{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            );
+            cmd_config_set("api_key", &key);
+            (key, true)
+        }
+    };
 
     cmd_config_set("api_listen", "0.0.0.0:4200");
 
@@ -1725,7 +1730,11 @@ fn cmd_local_dashboard_launch() {
             ui::kv("Daemon", &url);
             ui::kv("Dashboard", &format!("http://{lan_ip}:4200/"));
             ui::kv("API key", &api_key);
-            ui::hint("Using existing local dashboard API key.");
+            if generated_new_key {
+                ui::hint("No API key was set; generated and saved a new dashboard API key.");
+            } else {
+                ui::hint("Using existing local dashboard API key.");
+            }
             ui::hint("Keep port 4200 blocked from WAN/public access.");
             if copy_to_clipboard(&dashboard_url) {
                 ui::hint("URL copied to clipboard");

@@ -68,7 +68,7 @@ const PROVIDERS: &[ProviderInfo] = &[
         needs_key: true,
     },
     ProviderInfo {
-        name: "nim",
+        name: "nvidia",
         env_var: "NVIDIA_NIM_API_KEY",
         default_model: "meta/llama-3.1-70b-instruct",
         needs_key: true,
