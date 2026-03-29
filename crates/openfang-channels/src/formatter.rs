@@ -285,6 +285,7 @@ fn ordered_list_item(line: &str) -> Option<&str> {
     }
 }
 
+#[allow(dead_code)]
 fn escape_html_attr(text: &str) -> String {
     escape_html(text).replace('"', "&quot;")
 }

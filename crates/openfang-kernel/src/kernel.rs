@@ -3955,9 +3955,12 @@ impl OpenFangKernel {
                 };
 
                 for (provider_id, base_url) in &local_providers {
-                    let result =
-                        openfang_runtime::provider_health::probe_provider(provider_id, base_url)
-                            .await;
+                    let result = openfang_runtime::provider_health::probe_provider(
+                        provider_id,
+                        base_url,
+                        None,
+                    )
+                    .await;
                     if result.reachable {
                         info!(
                             provider = %provider_id,
